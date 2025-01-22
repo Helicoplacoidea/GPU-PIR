@@ -1,0 +1,15 @@
+/home/whu/Desktop/TQQ/cudaDPF/build/CMakeFiles/install/strip.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/CMakeFiles/install/local.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/CMakeFiles/install.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/CMakeFiles/list_install_components.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/CMakeFiles/rebuild_cache.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/CMakeFiles/edit_cache.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/CMakeFiles/test.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/test/CMakeFiles/install/strip.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/test/CMakeFiles/install/local.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/test/CMakeFiles/install.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/test/CMakeFiles/list_install_components.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/test/CMakeFiles/rebuild_cache.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/test/CMakeFiles/edit_cache.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/test/CMakeFiles/test.dir
+/home/whu/Desktop/TQQ/cudaDPF/build/test/CMakeFiles/test_test_fss.dir
