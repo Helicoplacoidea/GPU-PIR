@@ -47,9 +47,15 @@ macro (add_bench_case_with_run _name)
     add_test(NAME ${_name} COMMAND "./run" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${_name}" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
 endmacro()
 
+macro (add_plain_test_case _name)
+    add_test_executable(${_name})
+    add_test(NAME ${_name} COMMAND "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${_name}" WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
+endmacro()
+
 
 # Test cases
 add_test_case_with_run(test_pir)
+add_plain_test_case(test_pir_utils)
 
 # Bench cases
 add_bench_case_with_run(bench_pir)

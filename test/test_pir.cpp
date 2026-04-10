@@ -1,390 +1,150 @@
 #include "../mpc_cuda/mpc_core.h"
+
+#include <cstdlib>
 #include <iostream>
+#include <string>
 #include <vector>
-#include <chrono>
-#include <stdlib.h>
 
-// #define entry_size 2
+#include "pir_test_utils.h"
 
-uint64_t generate_random_uint64()
+namespace
 {
-    uint64_t high = (uint64_t)rand();
-    uint64_t low = (uint64_t)rand();
-    return (high << 32) | low;
-}
-
-void test_evalAll_cpu(int n)
+bool run_pir_test(int n, int batch_size)
 {
-    uint128_t *db = (uint128_t *)malloc(entry_size * (1 << n) * sizeof(uint128_t));
-    // for (uint64_t i = 0; i < (1 << n) * entry_size; i++)
-    // {
-    //     db[i] = uint128_t(generate_random_uint64(), generate_random_uint64());
-    // }
-
-    // for (int i = 0; i < entry_size; i++)
-    // {
-    //     db[0 * entry_size + i].print_uint128("", db[65536 * entry_size + i]);
-    // }
-    // printf("\n");
-
-    uint64_t userkey1 = 597349;
-    uint64_t userkey2 = 121379;
-    block userkey = makeBlock(userkey1, userkey2);
-
-    AES_KEY key_host;
-    AES_set_encrypt_key(userkey, &key_host);
-
-    AES_Generator prg;
-
-    int maxlayer = n - 7;
-    if (maxlayer < 0)
+    if (!validate_packed_dpf_depth(n, "test_pir"))
     {
-        printf("n should be larger than 7\n");
-        return;
-    }
-    uint128_t a = uint128_t(0, 65536);
-    // uint64_t a = 65535;
-    unsigned char *k0;
-    unsigned char *k1;
-    k0 = (unsigned char *)malloc(1 + 16 + 1 + 18 * maxlayer + 16);
-    k1 = (unsigned char *)malloc(1 + 16 + 1 + 18 * maxlayer + 16);
-    GEN_Pack(&prg, &key_host, a, n, &k0, &k1);
-
-    std::vector<uint8_t> se0, se1, res;
-    auto start = std::chrono::high_resolution_clock::now();
-
-    se0 = EvalFull(&key_host, k0, n);
-    // se1 = EvalFull(&key_host, k1, n);
-    // printf("%d\n", se0.size());
-
-    uint128_t *pack_res0, *pack_res1, *pack_res;
-    pack_res0 = (uint128_t *)malloc(sizeof(uint128_t) * entry_size);
-    // pack_res1 = (uint128_t *)malloc(sizeof(uint128_t) * entry_size);
-    // pack_res = (uint128_t *)malloc(sizeof(uint128_t) * entry_size);
-    // for (int i = 0; i < entry_size; i++)
-    // {
-    //     pack_res0[i] = uint128_t(0, 0);
-    //     // pack_res1[i] = uint128_t(0, 0);
-    // }
-    // for (int i = 0; i < (1 << n); i++)
-    // {
-    //     for (int j = 0; j < entry_size; j++)
-    //     {
-    //         pack_res0[j] ^= db[i * entry_size + j].select((se0[i / 8] >> (7 - i % 8)) & 1);
-    //         // pack_res1[j] ^= db[i * entry_size + j].select((se1[i / 8] >> (7 - i % 8)) & 1);
-    //     }
-    // }
-    // for (int i = 0; i < entry_size; i++)
-    // {
-    //     pack_res[i] = pack_res0[i] ^ pack_res1[i];
-    //     // pack_res[i].print_uint128("", pack_res[i]);
-    //     if (pack_res[i] != db[a.get_low() * entry_size + i])
-    //     {
-    //         printf("Error at %d\n", i);
-    //         break;
-    //     }
-    // }
-
-    auto end = std::chrono::high_resolution_clock::now();
-
-    std::chrono::duration<double> elapsed = end - start;
-    printf("DPF-PIR Time taken: %f milliseconds\n", elapsed.count() * 1000);
-    return;
-}
-
-void test_evalAll(int n, int batch_size)
-{
-    int maxlayer = n - 7;
-    if (maxlayer < 0)
-    {
-        printf("n should be larger than 7\n");
-        return;
-    }
-    uint8_t *k0, *k1;
-    uint64_t a = 3;
-
-    k0 = (unsigned char *)malloc(batch_size * (1 + 16 + 1 + 18 * maxlayer + 16));
-    k1 = (unsigned char *)malloc(batch_size * (1 + 16 + 1 + 18 * maxlayer + 16));
-
-    cudaDPFkeygen(k0, k1, &a, n, maxlayer, batch_size);
-
-    uint128_t *pack_res0, *pack_res1, *pack_res;
-    pack_res0 = (uint128_t *)malloc(sizeof(uint128_t) * (1 << maxlayer) * batch_size);
-    pack_res1 = (uint128_t *)malloc(sizeof(uint128_t) * (1 << maxlayer) * batch_size);
-    pack_res = (uint128_t *)malloc(sizeof(uint128_t) * (1 << maxlayer) * batch_size);
-
-    // pack_res0 = test_dpf_LBL(k0);
-    // pack_res1 = test_dpf_LBL(k1);
-    // pack_res0 = test_dpf_block(k0);
-    pack_res1 = test_dpf_block(k1, batch_size);
-    for (int i = 0; i < 3; i++)
-    {
-        pack_res[i] = pack_res0[i] ^ pack_res1[i];
-        // pack_res0[i].print_uint128("dpf_res0:", pack_res0[i]);
-        // pack_res1[i].print_uint128("dpf_res1:", pack_res1[i]);
-        pack_res[i].print_uint128("dpf_res:", pack_res[i]);
-    }
-}
-
-void test_pir(int n, int batch_size)
-{
-    uint128_t *db = (uint128_t *)malloc(entry_size * (1 << n) * sizeof(uint128_t));
-    for (uint64_t i = 0; i < (1 << n) * entry_size; i++)
-    {
-        db[i] = uint128_t(generate_random_uint64(), generate_random_uint64());
-    }
-    int maxlayer = n - 7;
-    if (maxlayer < 0)
-    {
-        printf("n should be larger than 7\n");
-        return;
-    }
-    // uint64_t a = 5;
-    uint64_t *a = (uint64_t *)malloc(sizeof(uint64_t) * batch_size);
-    for (int i = 0; i < batch_size; i++)
-    {
-        a[i] = (1 << n) - i - 1;
+        return false;
     }
 
-    // for (int i = entry_size - 1; i >= 0; i--)
-    // {
-    //     db[0 * entry_size + i].print_uint128("", db[1 * entry_size + i]);
-    // }
-    // printf("\n");
+    const int maxlayer = n - 7;
+    std::vector<uint128_t> db = make_random_pir_db(n);
+    std::vector<uint64_t> queries = make_descending_queries(n, batch_size);
+    std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
+    std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
-    unsigned char *k0;
-    unsigned char *k1;
-    k0 = (unsigned char *)malloc(batch_size * (1 + 16 + 1 + 18 * maxlayer + 16));
-    k1 = (unsigned char *)malloc(batch_size * (1 + 16 + 1 + 18 * maxlayer + 16));
+    cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
+    std::vector<void *> d_ptrs = init_pir(batch_size, n, db.data());
 
-    cudaDPFkeygen(k0, k1, a, n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir(batch_size, n, db);
+    uint128_t *res0 = test_dpf_pir(k0.data(), d_ptrs, batch_size);
+    uint128_t *res1 = test_dpf_pir(k1.data(), d_ptrs, batch_size);
 
-    uint128_t *pack_res0, *pack_res1, *pack_res;
-    pack_res0 = (uint128_t *)malloc(sizeof(uint128_t) * entry_size * batch_size);
-    pack_res1 = (uint128_t *)malloc(sizeof(uint128_t) * entry_size * batch_size);
-    pack_res = (uint128_t *)malloc(sizeof(uint128_t) * entry_size * batch_size);
+    std::string error;
+    const bool ok = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
 
-    pack_res0 = test_dpf_pir(k0, d_ptrs, batch_size);
-    pack_res1 = test_dpf_pir(k1, d_ptrs, batch_size);
-
-    // // printf("\n");
-
-    for (int j = 0; j < batch_size; j++)
-        for (int i = entry_size - 1; i >= 0; i--)
-        {
-            pack_res[i + j * entry_size] = pack_res1[i + j * entry_size] ^ pack_res0[i + j * entry_size];
-            // pack_res[i].print_uint128("res:", pack_res[i + j * entry_size]);
-
-            if (pack_res[j * entry_size + i] != db[a[j] * entry_size + i])
-            {
-                printf("Error at %d pir", j);
-                break;
-            }
-        }
+    free(res0);
+    free(res1);
     free_cuda_memory(d_ptrs);
-    free(db);
+
+    if (!ok)
+    {
+        std::cerr << "[FAIL] test_pir: " << error << '\n';
+        return false;
+    }
+
+    std::cout << "[PASS] test_pir\n";
+    return true;
 }
 
-void test_pir_pipeline(int n, int batch_size)
+bool run_pir_pipeline_test(int n, int batch_size)
 {
-    uint128_t *db = (uint128_t *)malloc(entry_size * (1 << n) * sizeof(uint128_t));
-    for (uint64_t i = 0; i < (1 << n) * entry_size; i++)
+    if (!validate_packed_dpf_depth(n, "test_pir_pipeline"))
     {
-        db[i] = uint128_t(generate_random_uint64(), generate_random_uint64());
-    }
-    int maxlayer = n - 7;
-    if (maxlayer < 0)
-    {
-        printf("n should be larger than 7\n");
-        return;
-    }
-    // uint64_t a = 5;
-    uint64_t *a = (uint64_t *)malloc(sizeof(uint64_t) * batch_size);
-    for (int i = 0; i < batch_size; i++)
-    {
-        a[i] = (1 << n) - i - 1;
+        return false;
     }
 
-    // for (int i = entry_size - 1; i >= 0; i--)
-    // {
-    //     db[0 * entry_size + i].print_uint128("", db[3 * entry_size + i]);
-    // }
-    // printf("\n");
+    const int maxlayer = n - 7;
+    std::vector<uint128_t> db = make_random_pir_db(n);
+    std::vector<uint64_t> queries = make_descending_queries(n, batch_size);
+    std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
+    std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
-    unsigned char *k0;
-    unsigned char *k1;
-    k0 = (unsigned char *)malloc(batch_size * (1 + 16 + 1 + 18 * maxlayer + 16));
-    k1 = (unsigned char *)malloc(batch_size * (1 + 16 + 1 + 18 * maxlayer + 16));
-
-    cudaDPFkeygen(k0, k1, a, n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir_pipeline(batch_size, n, db);
+    cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
+    std::vector<void *> d_ptrs = init_pir_pipeline(batch_size, n, db.data());
     std::vector<void *> handles = init_streams_and_events();
 
-    uint128_t *pack_res0, *pack_res1, *pack_res;
-    pack_res0 = (uint128_t *)malloc(sizeof(uint128_t) * entry_size * batch_size);
-    pack_res1 = (uint128_t *)malloc(sizeof(uint128_t) * entry_size * batch_size);
-    pack_res = (uint128_t *)malloc(sizeof(uint128_t) * entry_size * batch_size);
+    uint128_t *res0 = test_dpf_pir_pipeline(k0.data(), d_ptrs, handles, batch_size);
+    uint128_t *res1 = test_dpf_pir_pipeline(k1.data(), d_ptrs, handles, batch_size);
 
-    pack_res0 = test_dpf_pir_pipeline(k0, d_ptrs, handles, batch_size);
-    pack_res1 = test_dpf_pir_pipeline(k1, d_ptrs, handles, batch_size);
+    std::string error;
+    const bool ok = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
 
-    printf("\n");
-
-    for (int j = 0; j < batch_size; j++)
-        for (int i = entry_size - 1; i >= 0; i--)
-        {
-            pack_res[i + j * entry_size] = pack_res1[i + j * entry_size] ^ pack_res0[i + j * entry_size];
-            // pack_res[i].print_uint128("res:", pack_res0[i + j * entry_size]);
-
-            if (pack_res[j * entry_size + i] != db[a[j] * entry_size + i])
-            {
-                printf("Error at %d pir", j);
-                break;
-            }
-        }
+    cudaFreeHost(res0);
+    cudaFreeHost(res1);
     free_cuda_memory(d_ptrs);
     cleanup_streams_and_events(handles);
-    free(db);
+
+    if (!ok)
+    {
+        std::cerr << "[FAIL] test_pir_pipeline: " << error << '\n';
+        return false;
+    }
+
+    std::cout << "[PASS] test_pir_pipeline\n";
+    return true;
 }
 
-void test_pir_LUT(int n, int batch_size)
+bool run_pir_lut_test(int n, int batch_size)
 {
-    uint64_t total = (1ULL << n);
-    uint32_t *db = (uint32_t *)malloc(total * sizeof(uint32_t));
-    if (!db)
+    if (!validate_packed_dpf_depth(n, "test_pir_LUT") ||
+        !validate_lut_batch(n, batch_size, "test_pir_LUT"))
     {
-        perror("malloc failed");
-        exit(1);
+        return false;
     }
 
-    for (uint64_t i = 0; i < (1ULL << n); i++)
-    {
-        // int16_t val = i - 32768;
-        // db[i] = val > 0 ? val : 0;
-        db[i] = i;
-    }
-    int maxlayer = n - 7;
-    if (maxlayer < 0)
-    {
-        printf("n should be larger than 7\n");
-        return;
-    }
+    const int maxlayer = n - 7;
+    std::vector<uint32_t> db = make_lut_db(n);
+    std::vector<uint64_t> queries = make_constant_queries(batch_size, 3);
+    std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
+    std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
-    if (n >= 25)
-    {
-        if (batch_size > 1)
-        {
-            printf("batch_size should be 1 when n >= 25\n");
-            return;
-        }
-    }
+    cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
+    std::vector<void *> d_ptrs = init_pir_LUT(batch_size, n, db.data());
 
-    // uint64_t a = 5;
-    uint64_t *a = (uint64_t *)malloc(sizeof(uint64_t) * batch_size);
-    for (int i = 0; i < batch_size; i++)
-    {
-        a[i] = 3;
-    }
+    uint32_t *res0 = test_dpf_pir_LUT(k0.data(), d_ptrs, batch_size);
+    uint32_t *res1 = test_dpf_pir_LUT(k1.data(), d_ptrs, batch_size);
 
-    // for (int i = entry_size - 1; i >= 0; i--)
-    // {
-    //     db[0 * entry_size + i].print_uint128("", db[3 * entry_size + i]);
-    // }
-    // printf("\n");
+    std::string error;
+    const bool ok = verify_lut_response(res0, res1, db.data(), queries.data(), batch_size, &error);
 
-    unsigned char *k0;
-    unsigned char *k1;
-    k0 = (unsigned char *)malloc(batch_size * (1 + 16 + 1 + 18 * maxlayer + 16));
-    k1 = (unsigned char *)malloc(batch_size * (1 + 16 + 1 + 18 * maxlayer + 16));
-
-    cudaDPFkeygen(k0, k1, a, n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir_LUT(batch_size, n, db);
-    // std::vector<void *> handles = init_streams_and_events();
-
-    uint32_t *pack_res0, *pack_res1, *pack_res;
-    pack_res0 = (uint32_t *)malloc(sizeof(uint32_t) * batch_size);
-    pack_res1 = (uint32_t *)malloc(sizeof(uint32_t) * batch_size);
-    pack_res = (uint32_t *)malloc(sizeof(uint32_t) * batch_size);
-
-    pack_res0 = test_dpf_pir_LUT(k0, d_ptrs, batch_size);
-
-    pack_res1 = test_dpf_pir_LUT(k1, d_ptrs, batch_size);
-
-    printf("\n");
-
-    for (int j = 0; j < batch_size; j++)
-    {
-
-        pack_res[j] = pack_res1[j] ^ pack_res0[j];
-        printf("%d %d %d\n", pack_res0[j], pack_res1[j], pack_res[j]);
-
-        if (pack_res[j] != db[a[j]])
-        {
-            printf("Error at %d pir", j);
-            break;
-        }
-    }
-
+    cudaFreeHost(res0);
+    cudaFreeHost(res1);
     free_cuda_memory(d_ptrs);
-    // cleanup_streams_and_events(handles);
-    free(db);
+
+    if (!ok)
+    {
+        std::cerr << "[FAIL] test_pir_LUT: " << error << '\n';
+        return false;
+    }
+
+    std::cout << "[PASS] test_pir_LUT\n";
+    return true;
 }
+} // namespace
 
-void select_best_gpu()
+int main(int argc, char **argv)
 {
-    FILE *pipe = popen(
-        "nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits", "r");
-    if (!pipe)
+    std::srand(1);
+
+    int n = 24;
+    int batch_size = 512;
+    std::string error;
+    if (!parse_cli_overrides(argc, argv, n, batch_size, &n, &batch_size, &error))
     {
-        std::cerr << "Failed to run nvidia-smi\n";
-        return;
+        std::cerr << "[FAIL] " << error << '\n';
+        return 1;
     }
 
-    std::string line;
-    char buffer[128];
-    int gpu_id = -1;
-    int max_free_mem = -1;
-    int idx = 0;
-
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
-    {
-        int free_mem = std::stoi(buffer);
-        if (free_mem > max_free_mem)
-        {
-            max_free_mem = free_mem;
-            gpu_id = idx;
-        }
-        idx++;
-    }
-
-    pclose(pipe);
-
-    if (gpu_id >= 0)
-    {
-        std::ostringstream ss;
-        ss << gpu_id;
-        setenv("CUDA_VISIBLE_DEVICES", ss.str().c_str(), 1);
-        std::cout << "[INFO] Selected GPU " << gpu_id
-                  << " (free memory: " << max_free_mem << " MB)" << std::endl;
-    }
-    else
-    {
-        std::cerr << "[WARN] No GPU found via nvidia-smi\n";
-    }
-}
-
-// 测试代码
-int main()
-{
     select_best_gpu();
-    int a = 24, b = 512;
-    test_pir(a, b);
+    if (!has_cuda_device())
+    {
+        std::cout << "[SKIP] test_pir requires a CUDA-capable device\n";
+        return 0;
+    }
 
-    test_pir_pipeline(a, b);
-    test_pir_LUT(a, b);
-    // test_evalAll_cpu(27);
-    // test_evalAll(15, 512);
+    bool ok = true;
+    ok = run_pir_test(n, batch_size) && ok;
+    ok = run_pir_pipeline_test(n, batch_size) && ok;
+    ok = run_pir_lut_test(n, batch_size) && ok;
 
-    return 0;
+    return ok ? 0 : 1;
 }
