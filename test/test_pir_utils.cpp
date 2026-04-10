@@ -129,6 +129,35 @@ bool verify_legacy_unused_cuda_exports_removed()
 
     return true;
 }
+
+bool verify_cuda_source_cleanup_applied()
+{
+    std::ifstream input("mpc_cuda/fss_cuda.cu");
+    if (!input)
+    {
+        return false;
+    }
+
+    const std::string content((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+
+    const std::vector<std::string> forbidden_snippets = {
+        "auto block = cooperative_groups::this_thread_block();",
+        "uint128_t *d_k_res;\t\t  // save second reduction",
+        "cudaEvent_t keyReadyEvent;",
+        "cudaEventCreate(&keyReadyEvent);",
+        "const int device = 0;"};
+
+    for (const std::string &snippet : forbidden_snippets)
+    {
+        if (content.find(snippet) != std::string::npos)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
 } // namespace
 
 int main()
@@ -160,6 +189,12 @@ int main()
     if (!verify_legacy_unused_cuda_exports_removed())
     {
         std::cerr << "Legacy unused CUDA exports are still present\n";
+        return 1;
+    }
+
+    if (!verify_cuda_source_cleanup_applied())
+    {
+        std::cerr << "CUDA source still contains known unused cleanup targets\n";
         return 1;
     }
 

@@ -385,7 +385,6 @@ __global__ void EvalAll_BlockEvaluation(uint32_t *key, int layer_len, int layer,
 	__shared__ uint8_t shared_tCW[10][2];
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	int tid = threadIdx.x;
-	auto block = cooperative_groups::this_thread_block();
 	// if (tid >= (1 << layer_len))
 	// 	return;
 
@@ -404,8 +403,6 @@ __global__ void EvalAll_BlockEvaluation(uint32_t *key, int layer_len, int layer,
 
 	if (tid == 0)
 	{
-		// cooperative_groups::memcpy_async(block, shared_s, s_local + blockIdx.x % (1 << layer), sizeof(uint128_t));
-		// cooperative_groups::memcpy_async(block, shared_t, (uint8_t *)(t_local + blockIdx.x % (1 << layer)), sizeof(uint8_t));
 		shared_s[0] = s_local[blockIdx.x % (1 << layer)];
 		shared_t[0] = t_local[blockIdx.x % (1 << layer)];
 	}
@@ -416,15 +413,6 @@ __global__ void EvalAll_BlockEvaluation(uint32_t *key, int layer_len, int layer,
 		shared_tCW[tid][0] = k_local[18 * (tid + 1 + layer) + 16];
 		shared_tCW[tid][1] = k_local[18 * (tid + 1 + layer) + 17];
 	}
-	// for (int batch = 0; batch < layer_len; batch++)
-	// {
-	// 	cooperative_groups::memcpy_async(block, (unsigned char *)&shared_sCW[batch], &k_local[18 * (batch + 1 + layer)], 16);
-	// 	// cooperative_groups::memcpy_async(block, (unsigned char *)&shared_tCW[batch][0], &k_local[18 * (batch + 1 + layer) + 16], 1);
-	// 	// cooperative_groups::memcpy_async(block, (unsigned char *)&shared_tCW[batch][1], &k_local[18 * (batch + 1 + layer) + 17], 1);
-
-	// 	block.sync();
-	// }
-
 	__syncthreads();
 
 	uint128_t sCW;
@@ -493,7 +481,6 @@ __global__ void EvalAll_BlockEvaluation_nobankconflict(uint32_t *key, int layer_
 	__shared__ uint8_t shared_tCW[10][2];
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	int tid = threadIdx.x;
-	auto block = cooperative_groups::this_thread_block();
 	const int wid = tid / warpSize;
 	const int lid = tid & 31;
 	if (tid >= (1 << layer_len))
@@ -1074,7 +1061,7 @@ extern "C" void cudaDPFkeygen(uint8_t *k0, uint8_t *k1, uint64_t *alpha, int n, 
 
 extern "C++" std::vector<void *> init_pir(int N, int n, uint128_t *db)
 {
-	check_mem_usage();
+	// check_mem_usage();
 
 	std::vector<void *> d_ptrs;
 	size_t maxlayer = n - 7;
@@ -1088,27 +1075,13 @@ extern "C++" std::vector<void *> init_pir(int N, int n, uint128_t *db)
 	size_t total_cuda_malloc = 0;
 
 	uint128_t *blocksum_cuda;
-	uint128_t *d_k_res;
 
 	size_t blocksum_size = N * ((1 << n) / 256) * sizeof(uint128_t) * entry_size;
-	size_t kres_size;
-	if ((1 << n) > 65536)
-	{
-		kres_size = N * ((1 << n) / 65536) * sizeof(uint128_t) * entry_size;
-	}
-	else
-	{
-		kres_size = N * sizeof(uint128_t) * entry_size;
-	}
 
 	cudaMalloc(&blocksum_cuda, blocksum_size);
 	total_cuda_malloc += blocksum_size;
 
-	cudaMalloc(&d_k_res, kres_size);
-	total_cuda_malloc += kres_size;
-
 	d_ptrs.push_back(blocksum_cuda);
-	d_ptrs.push_back(d_k_res);
 
 	uint8_t *d_key;
 	size_t key_size = N * (1 + 16 + 1 + 18 * maxlayer + 16) * sizeof(uint8_t);
@@ -1167,7 +1140,7 @@ extern "C++" std::vector<void *> init_pir(int N, int n, uint128_t *db)
 
 extern "C++" std::vector<void *> init_pir_pipeline(int N, int n, uint128_t *db)
 {
-	check_mem_usage();
+	// check_mem_usage();
 
 	std::vector<void *> d_ptrs;
 	size_t maxlayer = n - 7;
@@ -1181,24 +1154,14 @@ extern "C++" std::vector<void *> init_pir_pipeline(int N, int n, uint128_t *db)
 
 	size_t total_cuda_malloc = 0;
 
-	uint128_t *d_input, *d_intermediate8, *d_intermediate16, *d_output;
+	uint128_t *d_input, *d_output;
 
 	size_t size_input = entry_size * CHUNK_SIZE * sizeof(uint128_t);
-	size_t size_intermediate8 = entry_size * CHUNK_SIZE / 256 * sizeof(uint128_t);
-	size_t size_intermediate16 = entry_size * CHUNK_SIZE / 65536 * sizeof(uint128_t);
 	size_t size_output = entry_size * sizeof(uint128_t);
 
 	cudaMalloc(&d_input, size_input);
 	total_cuda_malloc += size_input;
 	d_ptrs.push_back(d_input);
-
-	cudaMalloc(&d_intermediate8, size_intermediate8);
-	total_cuda_malloc += size_intermediate8;
-	d_ptrs.push_back(d_intermediate8);
-
-	cudaMalloc(&d_intermediate16, size_intermediate16);
-	total_cuda_malloc += size_intermediate16;
-	d_ptrs.push_back(d_intermediate16);
 
 	cudaMalloc(&d_output, size_output);
 	total_cuda_malloc += size_output;
@@ -1267,13 +1230,11 @@ extern "C++" std::vector<void *> init_pir_LUT(int N, int n, uint32_t *db)
 
 	d_ptrs.push_back(d_db);
 
-	uint32_t *d_input, *d_intermediate8, *d_intermediate16, *d_output;
+	uint32_t *d_input, *d_intermediate, *d_output;
 	cudaMalloc(&d_input, N * CHUNK_SIZE * sizeof(uint32_t));
 	d_ptrs.push_back(d_input);
-	cudaMalloc(&d_intermediate8, N * CHUNK_SIZE / 256 * sizeof(uint32_t));
-	d_ptrs.push_back(d_intermediate8);
-	cudaMalloc(&d_intermediate16, N * CHUNK_SIZE / 65536 * sizeof(uint32_t));
-	d_ptrs.push_back(d_intermediate16);
+	cudaMalloc(&d_intermediate, N * CHUNK_SIZE / 256 * sizeof(uint32_t));
+	d_ptrs.push_back(d_intermediate);
 	cudaMalloc(&d_output, N * sizeof(uint32_t));
 	d_ptrs.push_back(d_output);
 
@@ -1341,37 +1302,26 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, std::vector<void *> d_ptrs, i
 
 	uint128_t *d_db;
 	uint128_t *d_se;
-	// uint128_t *d_input;
 	uint128_t *blocksum_cuda; // save first reduction
-	uint128_t *d_k_res;		  // save second reduction
 
 	d_db = static_cast<uint128_t *>(d_ptrs[0]);
 	blocksum_cuda = static_cast<uint128_t *>(d_ptrs[1]);
-	d_k_res = static_cast<uint128_t *>(d_ptrs[2]);
-	d_key = static_cast<uint8_t *>(d_ptrs[3]);
-	d_s = static_cast<uint128_t *>(d_ptrs[4]);
-	d_t = static_cast<uint32_t *>(d_ptrs[5]);
-	d_s_intermediate = static_cast<uint128_t *>(d_ptrs[6]);
-	d_t_intermediate = static_cast<uint32_t *>(d_ptrs[7]);
-	d_s_res = static_cast<uint128_t *>(d_ptrs[8]);
-	d_t_res = static_cast<uint32_t *>(d_ptrs[9]);
-	d_se = static_cast<uint128_t *>(d_ptrs[10]);
+	d_key = static_cast<uint8_t *>(d_ptrs[2]);
+	d_s = static_cast<uint128_t *>(d_ptrs[3]);
+	d_t = static_cast<uint32_t *>(d_ptrs[4]);
+	d_s_intermediate = static_cast<uint128_t *>(d_ptrs[5]);
+	d_t_intermediate = static_cast<uint32_t *>(d_ptrs[6]);
+	d_s_res = static_cast<uint128_t *>(d_ptrs[7]);
+	d_t_res = static_cast<uint32_t *>(d_ptrs[8]);
+	d_se = static_cast<uint128_t *>(d_ptrs[9]);
 
 	uint128_t *res = (uint128_t *)malloc(N * sizeof(uint128_t) * entry_size);
 	memset(res, 0, N * entry_size * sizeof(uint128_t));
 
 	uint32_t *aes_key;
-	// cudaMalloc(&aes_key, 4 * (14 + 1) * sizeof(uint32_t));
 	aes_key = static_cast<uint32_t *>(d_ptrs.back());
 
-	// cudaMalloc(&d_key, N * (1 + 16 + 1 + 18 * maxlayer + 16) * sizeof(uint8_t));
 	cudaMemcpy(d_key, key, N * (1 + 16 + 1 + 18 * maxlayer + 16) * sizeof(uint8_t), cudaMemcpyHostToDevice);
-
-	// for (int i = 0; i < N; i++)
-	// {
-	// 	cudaMemcpy(d_s + i, &key[1 + i * (1 + 16 + 1 + 18 * maxlayer + 16)], 16, cudaMemcpyHostToDevice);
-	// 	cudaMemcpy(d_t + i, &key[17 + i * (1 + 16 + 1 + 18 * maxlayer + 16)], 1, cudaMemcpyHostToDevice);
-	// }
 	seed_copy<<<(N + 255) / 256, 256>>>(d_s, d_t, d_key, maxlayer, N);
 	cudaDeviceSynchronize();
 
@@ -1421,14 +1371,10 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, std::vector<void *> d_ptrs, i
 		printf("CUDA error: %s\n", cudaGetErrorString(error));
 		// return -1;
 	}
-	check_mem_usage();
+	// check_mem_usage();
 
 	return res;
 }
-
-// #define NUM_STREAMS 10
-// #define NUM_CHUNKS 32768
-// #define CHUNK_SIZE (1 << 16)
 
 extern "C++" std::vector<void *> init_streams_and_events()
 {
@@ -1481,7 +1427,6 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, std::vector<void *> 
 {
 	int n = key[0];
 	int maxlayer = n - 7;
-	int CHUNK_SIZE = 1 << (n - 8);
 
 	uint8_t *d_key;
 	uint128_t *d_s, *d_s_intermediate, *d_s_res;
@@ -1492,28 +1437,25 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, std::vector<void *> 
 
 	d_db = static_cast<uint128_t *>(d_ptrs[0]);
 
-	uint128_t *d_input, *d_intermediate8, *d_intermediate16, *d_output;
+	uint128_t *d_input, *d_output;
 	d_input = static_cast<uint128_t *>(d_ptrs[1]);
-	d_intermediate8 = static_cast<uint128_t *>(d_ptrs[2]);
-	d_intermediate16 = static_cast<uint128_t *>(d_ptrs[3]);
-	d_output = static_cast<uint128_t *>(d_ptrs[4]);
+	d_output = static_cast<uint128_t *>(d_ptrs[2]);
 
 	uint8_t *key_pinned;
 	size_t key_size = N * (1 + 16 + 1 + 18 * maxlayer + 16) * sizeof(uint8_t);
 	cudaMallocHost(&key_pinned, key_size);
 	memcpy(key_pinned, key, key_size);
 
-	d_s = static_cast<uint128_t *>(d_ptrs[5]);
-	d_t = static_cast<uint32_t *>(d_ptrs[6]);
-	d_s_intermediate = static_cast<uint128_t *>(d_ptrs[7]);
-	d_t_intermediate = static_cast<uint32_t *>(d_ptrs[8]);
-	d_s_res = static_cast<uint128_t *>(d_ptrs[9]);
-	d_t_res = static_cast<uint32_t *>(d_ptrs[10]);
-	d_se = static_cast<uint128_t *>(d_ptrs[11]);
+	d_s = static_cast<uint128_t *>(d_ptrs[3]);
+	d_t = static_cast<uint32_t *>(d_ptrs[4]);
+	d_s_intermediate = static_cast<uint128_t *>(d_ptrs[5]);
+	d_t_intermediate = static_cast<uint32_t *>(d_ptrs[6]);
+	d_s_res = static_cast<uint128_t *>(d_ptrs[7]);
+	d_t_res = static_cast<uint32_t *>(d_ptrs[8]);
+	d_se = static_cast<uint128_t *>(d_ptrs[9]);
 
 	uint128_t *res;
 	cudaMallocHost(&res, entry_size * N * sizeof(uint128_t));
-	// res = static_cast<uint128_t *>(d_ptrs[14]);
 
 	uint32_t *aes_key;
 	aes_key = static_cast<uint32_t *>(d_ptrs.back());
@@ -1522,9 +1464,6 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, std::vector<void *> 
 
 	cudaStream_t *streams = static_cast<cudaStream_t *>(handles[0]);
 	cudaEvent_t(*events)[28] = static_cast<cudaEvent_t(*)[28]>(handles[1]);
-
-	cudaEvent_t keyReadyEvent;
-	cudaEventCreate(&keyReadyEvent);
 
 	int threads_per_block;
 	int blocks_per_grid;
@@ -1552,7 +1491,6 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, std::vector<void *> 
 	// Set the attributes to a CUDA stream of type cudaStream_t
 	cudaStreamSetAttribute(streams[4], cudaStreamAttributeAccessPolicyWindow, &stream_attribute);
 #endif
-	// cudaMemcpy(d_input, db, entry_size * CHUNK_SIZE * sizeof(uint128_t), cudaMemcpyHostToDevice);
 
 	for (int chunk = 0; chunk < N; chunk++)
 	{
@@ -1607,68 +1545,19 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, std::vector<void *> 
 		cudaStreamWaitEvent(streams[4], events[chunk][3], 0);
 
 		MultiplicationReduction_grid_row<<<256, threads_per_block / 2, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_input, 1, 1);
-		// cudaDeviceSynchronize();
 		cudaEventRecord(events[chunk][4], streams[4]);
 
 		cudaStreamWaitEvent(streams[5], events[chunk][4], 0);
-		// if (chunk > 0)
-		// 	cudaStreamWaitEvent(streams[5], events[chunk - 1][6], 0);
 		BlockReduction<<<1, 256, 0, streams[5]>>>(d_input, d_output);
 		cudaEventRecord(events[chunk][5], streams[5]);
 		cudaMemcpyAsync(res + entry_size * chunk * 1, d_output, entry_size * 1 * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[5]);
-
-		// if (n <= 16)
-		// {
-
-		// 	cudaStreamWaitEvent(streams[5], events[chunk][4], 0);
-		// 	// if (chunk > 0)
-		// 	// 	cudaStreamWaitEvent(streams[5], events[chunk - 1][6], 0);
-		// 	BlockReduction<<<1, ((1 << n) + 255) / 256, 0, streams[5]>>>(d_input, d_output);
-		// 	cudaEventRecord(events[chunk][5], streams[5]);
-		// 	cudaMemcpyAsync(res + entry_size * chunk * 1, d_output, entry_size * 1 * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[5]);
-		// }
-		// else if (n > 16 && n <= 24)
-		// {
-
-		// 	cudaStreamWaitEvent(streams[5], events[chunk][4], 0);
-		// 	// if (chunk > 0)
-		// 	// 	cudaStreamWaitEvent(streams[5], events[chunk - 1][6], 0);
-		// 	BlockReduction<<<(CHUNK_SIZE + 255) / 256, 256, 0, streams[5]>>>(d_input, d_intermediate8);
-		// 	cudaEventRecord(events[chunk][5], streams[5]);
-
-		// 	cudaStreamWaitEvent(streams[6], events[chunk][5], 0);
-		// 	BlockReduction<<<1, (CHUNK_SIZE + 255) / 256, 0, streams[6]>>>(d_intermediate8, d_output);
-
-		// 	cudaEventRecord(events[chunk][6], streams[6]);
-		// 	cudaMemcpyAsync(res + entry_size * chunk * 1, d_output, entry_size * 1 * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[6]);
-		// }
-		// else if (n > 24 && n <= 28)
-		// {
-		// 	cudaStreamWaitEvent(streams[5], events[chunk][4], 0);
-		// 	// if (chunk > 0)
-		// 	// 	cudaStreamWaitEvent(streams[5], events[chunk - 1][6], 0);
-		// 	BlockReduction<<<(CHUNK_SIZE + 255) / 256, 256, 0, streams[5]>>>(d_input, d_intermediate8);
-		// 	cudaEventRecord(events[chunk][5], streams[5]);
-
-		// 	cudaStreamWaitEvent(streams[6], events[chunk][5], 0);
-		// 	// if (chunk > 0)
-		// 	// 	cudaStreamWaitEvent(streams[6], events[chunk - 1][7], 0);
-		// 	BlockReduction<<<(CHUNK_SIZE + 255) / 65536, 256, 0, streams[6]>>>(d_intermediate8, d_intermediate16);
-		// 	cudaEventRecord(events[chunk][6], streams[6]);
-
-		// 	cudaStreamWaitEvent(streams[7], events[chunk][6], 0);
-		// 	BlockReduction<<<1, (CHUNK_SIZE + 255) / 65536, 0, streams[7]>>>(d_intermediate16, d_output);
-		// 	cudaEventRecord(events[chunk][7], streams[7]);
-
-		// 	cudaMemcpyAsync(res + entry_size * chunk * 1, d_output, entry_size * 1 * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[7]);
-		// }
 	}
 #ifdef L2_CACHE
 	cudaCtxResetPersistingL2Cache();
 #endif
 	for (int i = 0; i < NUM_STREAMS; i++)
 		cudaStreamSynchronize(streams[i]);
-	check_mem_usage();
+	// check_mem_usage();
 
 	cudaError_t error = cudaGetLastError();
 	if (error != cudaSuccess)
@@ -1684,7 +1573,6 @@ extern "C++" uint32_t *test_dpf_pir_LUT(uint8_t *key, std::vector<void *> d_ptrs
 {
 	int n = key[0];
 	int maxlayer = n - 7;
-	int CHUNK_SIZE = 1 << (n - 8);
 
 	uint8_t *d_key;
 	uint128_t *d_s, *d_s_intermediate, *d_s_res;
@@ -1695,28 +1583,26 @@ extern "C++" uint32_t *test_dpf_pir_LUT(uint8_t *key, std::vector<void *> d_ptrs
 
 	d_db = static_cast<uint32_t *>(d_ptrs[0]);
 
-	uint32_t *d_input, *d_intermediate, *d_intermediate16, *d_output;
+	uint32_t *d_input, *d_intermediate, *d_output;
 	d_input = static_cast<uint32_t *>(d_ptrs[1]);
 	d_intermediate = static_cast<uint32_t *>(d_ptrs[2]);
-	d_intermediate16 = static_cast<uint32_t *>(d_ptrs[3]);
-	d_output = static_cast<uint32_t *>(d_ptrs[4]);
+	d_output = static_cast<uint32_t *>(d_ptrs[3]);
 
 	uint8_t *key_pinned;
 	size_t key_size = N * (1 + 16 + 1 + 18 * maxlayer + 16) * sizeof(uint8_t);
 	cudaMallocHost(&key_pinned, key_size);
 	memcpy(key_pinned, key, key_size);
 
-	d_s = static_cast<uint128_t *>(d_ptrs[5]);
-	d_t = static_cast<uint32_t *>(d_ptrs[6]);
-	d_s_intermediate = static_cast<uint128_t *>(d_ptrs[7]);
-	d_t_intermediate = static_cast<uint32_t *>(d_ptrs[8]);
-	d_s_res = static_cast<uint128_t *>(d_ptrs[9]);
-	d_t_res = static_cast<uint32_t *>(d_ptrs[10]);
-	d_se = static_cast<uint128_t *>(d_ptrs[11]);
+	d_s = static_cast<uint128_t *>(d_ptrs[4]);
+	d_t = static_cast<uint32_t *>(d_ptrs[5]);
+	d_s_intermediate = static_cast<uint128_t *>(d_ptrs[6]);
+	d_t_intermediate = static_cast<uint32_t *>(d_ptrs[7]);
+	d_s_res = static_cast<uint128_t *>(d_ptrs[8]);
+	d_t_res = static_cast<uint32_t *>(d_ptrs[9]);
+	d_se = static_cast<uint128_t *>(d_ptrs[10]);
 
 	uint32_t *res;
 	cudaMallocHost(&res, N * sizeof(uint32_t));
-	// res = static_cast<uint128_t *>(d_ptrs[14]);
 
 	uint32_t *aes_key;
 	aes_key = static_cast<uint32_t *>(d_ptrs.back());
@@ -1724,12 +1610,6 @@ extern "C++" uint32_t *test_dpf_pir_LUT(uint8_t *key, std::vector<void *> d_ptrs
 	cudaMalloc(&d_key, N * (1 + 16 + 1 + 18 * maxlayer + 16) * sizeof(uint8_t));
 
 	cudaMemcpy(d_key, key, N * (1 + 16 + 1 + 18 * maxlayer + 16) * sizeof(uint8_t), cudaMemcpyHostToDevice);
-
-	// for (int i = 0; i < N; i++)
-	// {
-	// 	cudaMemcpy(d_s + i, &key[1 + i * (1 + 16 + 1 + 18 * maxlayer + 16)], 16, cudaMemcpyHostToDevice);
-	// 	cudaMemcpy(d_t + i, &key[17 + i * (1 + 16 + 1 + 18 * maxlayer + 16)], 1, cudaMemcpyHostToDevice);
-	// }
 
 	seed_copy<<<(N + 255) / 256, 256>>>(d_s, d_t, d_key, maxlayer, N);
 	cudaDeviceSynchronize();
@@ -1792,25 +1672,6 @@ extern "C++" uint32_t *test_dpf_pir_LUT(uint8_t *key, std::vector<void *> d_ptrs
 	threads_per_block = 256;
 	blocks_per_grid = ((1ULL) << n) / threads_per_block;
 	blocks_per_grid = min(blocks_per_grid, 768);
-
-	const int device = 0;
-
-	// printf("Cooperative single-kernel reduce XOR test\n");
-
-	// cudaSetDevice(device);
-	// cudaDeviceProp prop;
-	// cudaGetDeviceProperties(&prop, device);
-
-	// int grid_size = 0;
-	// cudaOccupancyMaxActiveBlocksPerMultiprocessor(&grid_size,
-	// 											  EvalAll_BlockEvaluation,
-	// 											  threads_per_block, 4397 * sizeof(uint32_t));
-	// grid_size *= prop.multiProcessorCount;
-	// grid_size = min(grid_size, blocks_per_grid);
-	// printf("%d %d\n", prop.multiProcessorCount, grid_size);
-
-	// MultiplicationReduction_LUT<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_se, d_db, d_input, 1);
-	// cudaDeviceSynchronize();
 
 	MultiplicationReduction_LUT_new<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_se, d_db, d_input, 1, N);
 	cudaDeviceSynchronize();
