@@ -9,116 +9,116 @@
 
 namespace
 {
-bool run_pir_test(int n, int batch_size)
-{
-    if (!validate_packed_dpf_depth(n, "test_pir"))
+    bool run_pir_test(int n, int batch_size)
     {
-        return false;
+        if (!validate_packed_dpf_depth(n, "test_pir"))
+        {
+            return false;
+        }
+
+        const int maxlayer = n - 7;
+        std::vector<uint128_t> db = make_random_pir_db(n);
+        std::vector<uint64_t> queries = make_descending_queries(n, batch_size);
+        std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
+        std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
+
+        cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
+        std::vector<void *> d_ptrs = init_pir(batch_size, n, db.data());
+
+        uint128_t *res0 = test_dpf_pir(k0.data(), d_ptrs, batch_size);
+        uint128_t *res1 = test_dpf_pir(k1.data(), d_ptrs, batch_size);
+
+        std::string error;
+        const bool ok = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
+
+        free(res0);
+        free(res1);
+        free_cuda_memory(d_ptrs);
+
+        if (!ok)
+        {
+            std::cerr << "[FAIL] test_pir: " << error << '\n';
+            return false;
+        }
+
+        std::cout << "[PASS] test_pir\n";
+        return true;
     }
 
-    const int maxlayer = n - 7;
-    std::vector<uint128_t> db = make_random_pir_db(n);
-    std::vector<uint64_t> queries = make_descending_queries(n, batch_size);
-    std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
-    std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
-
-    cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir(batch_size, n, db.data());
-
-    uint128_t *res0 = test_dpf_pir(k0.data(), d_ptrs, batch_size);
-    uint128_t *res1 = test_dpf_pir(k1.data(), d_ptrs, batch_size);
-
-    std::string error;
-    const bool ok = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
-
-    free(res0);
-    free(res1);
-    free_cuda_memory(d_ptrs);
-
-    if (!ok)
+    bool run_pir_pipeline_test(int n, int batch_size)
     {
-        std::cerr << "[FAIL] test_pir: " << error << '\n';
-        return false;
+        if (!validate_packed_dpf_depth(n, "test_pir_pipeline"))
+        {
+            return false;
+        }
+
+        const int maxlayer = n - 7;
+        std::vector<uint128_t> db = make_random_pir_db(n);
+        std::vector<uint64_t> queries = make_descending_queries(n, batch_size);
+        std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
+        std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
+
+        cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
+        std::vector<void *> d_ptrs = init_pir_pipeline(batch_size, n, db.data());
+        std::vector<void *> handles = init_streams_and_events();
+
+        uint128_t *res0 = test_dpf_pir_pipeline(k0.data(), d_ptrs, handles, batch_size);
+        uint128_t *res1 = test_dpf_pir_pipeline(k1.data(), d_ptrs, handles, batch_size);
+
+        std::string error;
+        const bool ok = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
+
+        cudaFreeHost(res0);
+        cudaFreeHost(res1);
+        free_cuda_memory(d_ptrs);
+        cleanup_streams_and_events(handles);
+
+        if (!ok)
+        {
+            std::cerr << "[FAIL] test_pir_pipeline: " << error << '\n';
+            return false;
+        }
+
+        std::cout << "[PASS] test_pir_pipeline\n";
+        return true;
     }
 
-    std::cout << "[PASS] test_pir\n";
-    return true;
-}
-
-bool run_pir_pipeline_test(int n, int batch_size)
-{
-    if (!validate_packed_dpf_depth(n, "test_pir_pipeline"))
+    bool run_pir_lut_test(int n, int batch_size)
     {
-        return false;
+        if (!validate_packed_dpf_depth(n, "test_pir_LUT") ||
+            !validate_lut_batch(n, batch_size, "test_pir_LUT"))
+        {
+            return false;
+        }
+
+        const int maxlayer = n - 7;
+        std::vector<uint32_t> db = make_lut_db(n);
+        std::vector<uint64_t> queries = make_constant_queries(batch_size, 3);
+        std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
+        std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
+
+        cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
+        std::vector<void *> d_ptrs = init_pir_LUT(batch_size, n, db.data());
+
+        uint32_t *res0 = test_dpf_pir_LUT(k0.data(), d_ptrs, batch_size);
+        uint32_t *res1 = test_dpf_pir_LUT(k1.data(), d_ptrs, batch_size);
+
+        std::string error;
+        const bool ok = verify_lut_response(res0, res1, db.data(), queries.data(), batch_size, &error);
+
+        cudaFreeHost(res0);
+        cudaFreeHost(res1);
+        free_cuda_memory(d_ptrs);
+
+        if (!ok)
+        {
+            std::cerr << "[FAIL] test_pir_LUT: " << error << '\n';
+            return false;
+        }
+
+        std::cout << "[PASS] test_pir_LUT\n";
+        return true;
     }
-
-    const int maxlayer = n - 7;
-    std::vector<uint128_t> db = make_random_pir_db(n);
-    std::vector<uint64_t> queries = make_descending_queries(n, batch_size);
-    std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
-    std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
-
-    cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir_pipeline(batch_size, n, db.data());
-    std::vector<void *> handles = init_streams_and_events();
-
-    uint128_t *res0 = test_dpf_pir_pipeline(k0.data(), d_ptrs, handles, batch_size);
-    uint128_t *res1 = test_dpf_pir_pipeline(k1.data(), d_ptrs, handles, batch_size);
-
-    std::string error;
-    const bool ok = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
-
-    cudaFreeHost(res0);
-    cudaFreeHost(res1);
-    free_cuda_memory(d_ptrs);
-    cleanup_streams_and_events(handles);
-
-    if (!ok)
-    {
-        std::cerr << "[FAIL] test_pir_pipeline: " << error << '\n';
-        return false;
-    }
-
-    std::cout << "[PASS] test_pir_pipeline\n";
-    return true;
-}
-
-bool run_pir_lut_test(int n, int batch_size)
-{
-    if (!validate_packed_dpf_depth(n, "test_pir_LUT") ||
-        !validate_lut_batch(n, batch_size, "test_pir_LUT"))
-    {
-        return false;
-    }
-
-    const int maxlayer = n - 7;
-    std::vector<uint32_t> db = make_lut_db(n);
-    std::vector<uint64_t> queries = make_constant_queries(batch_size, 3);
-    std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
-    std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
-
-    cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir_LUT(batch_size, n, db.data());
-
-    uint32_t *res0 = test_dpf_pir_LUT(k0.data(), d_ptrs, batch_size);
-    uint32_t *res1 = test_dpf_pir_LUT(k1.data(), d_ptrs, batch_size);
-
-    std::string error;
-    const bool ok = verify_lut_response(res0, res1, db.data(), queries.data(), batch_size, &error);
-
-    cudaFreeHost(res0);
-    cudaFreeHost(res1);
-    free_cuda_memory(d_ptrs);
-
-    if (!ok)
-    {
-        std::cerr << "[FAIL] test_pir_LUT: " << error << '\n';
-        return false;
-    }
-
-    std::cout << "[PASS] test_pir_LUT\n";
-    return true;
-}
 } // namespace
 
 int main(int argc, char **argv)

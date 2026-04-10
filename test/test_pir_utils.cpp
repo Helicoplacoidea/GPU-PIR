@@ -1,6 +1,7 @@
 #include "../mpc_cuda/mpc_core.h"
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,51 @@ bool verify_cli_override_parser()
 
     return true;
 }
+
+bool verify_legacy_unused_cuda_exports_removed()
+{
+    const std::vector<std::string> forbidden_symbols = {
+        "cudamsbkeygen",
+        "cudamsbeval",
+        "cudafsskeygen",
+        "cudafsseval",
+        "test_dcf",
+        "test_dpf_LBL",
+        "test_dpf_block",
+        "cudaWarmup",
+        "warmupKernel",
+        "fss_gen_kernel",
+        "fss_eval_kernel",
+        "fss_msb_keygen_kernel",
+        "fss_msb_eval_kernel",
+        "fss_gen_device",
+        "dcf_eval_device",
+        "aes_test_kernel"};
+
+    const std::vector<std::string> files = {
+        "mpc_cuda/mpc_core.h",
+        "mpc_cuda/fss_cuda.cu"};
+
+    for (const std::string &path : files)
+    {
+        std::ifstream input(path);
+        if (!input)
+        {
+            return false;
+        }
+        const std::string content((std::istreambuf_iterator<char>(input)),
+                                  std::istreambuf_iterator<char>());
+        for (const std::string &symbol : forbidden_symbols)
+        {
+            if (content.find(symbol) != std::string::npos)
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
 } // namespace
 
 int main()
@@ -108,6 +154,12 @@ int main()
     if (!verify_cli_override_parser())
     {
         std::cerr << "CLI override parser returned unexpected result\n";
+        return 1;
+    }
+
+    if (!verify_legacy_unused_cuda_exports_removed())
+    {
+        std::cerr << "Legacy unused CUDA exports are still present\n";
         return 1;
     }
 
