@@ -36,10 +36,10 @@ bool benchmark_pir(int n, int batch_size)
     std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
     cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir(batch_size, n, db.data());
+    PirContext ctx = init_pir(batch_size, n, db.data());
 
-    uint128_t *verify0 = test_dpf_pir(k0.data(), d_ptrs, batch_size);
-    uint128_t *verify1 = test_dpf_pir(k1.data(), d_ptrs, batch_size);
+    uint128_t *verify0 = test_dpf_pir(k0.data(), ctx, batch_size);
+    uint128_t *verify1 = test_dpf_pir(k1.data(), ctx, batch_size);
 
     std::string error;
     const bool verified = verify_pir_response(verify0, verify1, db.data(), queries.data(), batch_size, &error);
@@ -48,22 +48,22 @@ bool benchmark_pir(int n, int batch_size)
     if (!verified)
     {
         std::cerr << "[FAIL] bench_pir smoke check: " << error << '\n';
-        free_cuda_memory(d_ptrs);
+        free_cuda_memory(ctx);
         return false;
     }
 
-    uint128_t *warmup = test_dpf_pir(k0.data(), d_ptrs, batch_size);
+    uint128_t *warmup = test_dpf_pir(k0.data(), ctx, batch_size);
     free(warmup);
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < kBenchmarkIterations; ++i)
     {
-        uint128_t *result = test_dpf_pir(k0.data(), d_ptrs, batch_size);
+        uint128_t *result = test_dpf_pir(k0.data(), ctx, batch_size);
         free(result);
     }
     auto end = std::chrono::high_resolution_clock::now();
 
-    free_cuda_memory(d_ptrs);
+    free_cuda_memory(ctx);
     print_benchmark_result("DPF-PIR", end - start, batch_size);
     return true;
 }
@@ -82,11 +82,11 @@ bool benchmark_pir_pipeline(int n, int batch_size)
     std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
     cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir_pipeline(batch_size, n, db.data());
-    std::vector<void *> handles = init_streams_and_events();
+    PirPipelineContext ctx = init_pir_pipeline(batch_size, n, db.data());
+    PirStreamContext handles = init_streams_and_events();
 
-    uint128_t *verify0 = test_dpf_pir_pipeline(k0.data(), d_ptrs, handles, batch_size);
-    uint128_t *verify1 = test_dpf_pir_pipeline(k1.data(), d_ptrs, handles, batch_size);
+    uint128_t *verify0 = test_dpf_pir_pipeline(k0.data(), ctx, handles, batch_size);
+    uint128_t *verify1 = test_dpf_pir_pipeline(k1.data(), ctx, handles, batch_size);
 
     std::string error;
     const bool verified = verify_pir_response(verify0, verify1, db.data(), queries.data(), batch_size, &error);
@@ -95,23 +95,23 @@ bool benchmark_pir_pipeline(int n, int batch_size)
     if (!verified)
     {
         std::cerr << "[FAIL] bench_pir_pipeline smoke check: " << error << '\n';
-        free_cuda_memory(d_ptrs);
+        free_cuda_memory(ctx);
         cleanup_streams_and_events(handles);
         return false;
     }
 
-    uint128_t *warmup = test_dpf_pir_pipeline(k0.data(), d_ptrs, handles, batch_size);
+    uint128_t *warmup = test_dpf_pir_pipeline(k0.data(), ctx, handles, batch_size);
     cudaFreeHost(warmup);
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < kBenchmarkIterations; ++i)
     {
-        uint128_t *result = test_dpf_pir_pipeline(k0.data(), d_ptrs, handles, batch_size);
+        uint128_t *result = test_dpf_pir_pipeline(k0.data(), ctx, handles, batch_size);
         cudaFreeHost(result);
     }
     auto end = std::chrono::high_resolution_clock::now();
 
-    free_cuda_memory(d_ptrs);
+    free_cuda_memory(ctx);
     cleanup_streams_and_events(handles);
     print_benchmark_result("DPF-PIR pipeline", end - start, batch_size);
     return true;
@@ -132,10 +132,10 @@ bool benchmark_pir_lut(int n, int batch_size)
     std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
     cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-    std::vector<void *> d_ptrs = init_pir_LUT(batch_size, n, db.data());
+    PirLutContext ctx = init_pir_LUT(batch_size, n, db.data());
 
-    uint32_t *verify0 = test_dpf_pir_LUT(k0.data(), d_ptrs, batch_size);
-    uint32_t *verify1 = test_dpf_pir_LUT(k1.data(), d_ptrs, batch_size);
+    uint32_t *verify0 = test_dpf_pir_LUT(k0.data(), ctx, batch_size);
+    uint32_t *verify1 = test_dpf_pir_LUT(k1.data(), ctx, batch_size);
 
     std::string error;
     const bool verified = verify_lut_response(verify0, verify1, db.data(), queries.data(), batch_size, &error);
@@ -144,22 +144,22 @@ bool benchmark_pir_lut(int n, int batch_size)
     if (!verified)
     {
         std::cerr << "[FAIL] bench_pir_LUT smoke check: " << error << '\n';
-        free_cuda_memory(d_ptrs);
+        free_cuda_memory(ctx);
         return false;
     }
 
-    uint32_t *warmup = test_dpf_pir_LUT(k0.data(), d_ptrs, batch_size);
+    uint32_t *warmup = test_dpf_pir_LUT(k0.data(), ctx, batch_size);
     cudaFreeHost(warmup);
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < kBenchmarkIterations; ++i)
     {
-        uint32_t *result = test_dpf_pir_LUT(k0.data(), d_ptrs, batch_size);
+        uint32_t *result = test_dpf_pir_LUT(k0.data(), ctx, batch_size);
         cudaFreeHost(result);
     }
     auto end = std::chrono::high_resolution_clock::now();
 
-    free_cuda_memory(d_ptrs);
+    free_cuda_memory(ctx);
     print_benchmark_result("DPF-PIR LUT", end - start, batch_size);
     return true;
 }

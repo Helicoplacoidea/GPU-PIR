@@ -23,17 +23,17 @@ namespace
         std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
         cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-        std::vector<void *> d_ptrs = init_pir(batch_size, n, db.data());
+        PirContext ctx = init_pir(batch_size, n, db.data());
 
-        uint128_t *res0 = test_dpf_pir(k0.data(), d_ptrs, batch_size);
-        uint128_t *res1 = test_dpf_pir(k1.data(), d_ptrs, batch_size);
+        uint128_t *res0 = test_dpf_pir(k0.data(), ctx, batch_size);
+        uint128_t *res1 = test_dpf_pir(k1.data(), ctx, batch_size);
 
         std::string error;
         const bool ok = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
 
         free(res0);
         free(res1);
-        free_cuda_memory(d_ptrs);
+        free_cuda_memory(ctx);
 
         if (!ok)
         {
@@ -59,18 +59,18 @@ namespace
         std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
         cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-        std::vector<void *> d_ptrs = init_pir_pipeline(batch_size, n, db.data());
-        std::vector<void *> handles = init_streams_and_events();
+        PirPipelineContext ctx = init_pir_pipeline(batch_size, n, db.data());
+        PirStreamContext handles = init_streams_and_events();
 
-        uint128_t *res0 = test_dpf_pir_pipeline(k0.data(), d_ptrs, handles, batch_size);
-        uint128_t *res1 = test_dpf_pir_pipeline(k1.data(), d_ptrs, handles, batch_size);
+        uint128_t *res0 = test_dpf_pir_pipeline(k0.data(), ctx, handles, batch_size);
+        uint128_t *res1 = test_dpf_pir_pipeline(k1.data(), ctx, handles, batch_size);
 
         std::string error;
         const bool ok = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
 
         cudaFreeHost(res0);
         cudaFreeHost(res1);
-        free_cuda_memory(d_ptrs);
+        free_cuda_memory(ctx);
         cleanup_streams_and_events(handles);
 
         if (!ok)
@@ -98,17 +98,17 @@ namespace
         std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
         cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-        std::vector<void *> d_ptrs = init_pir_LUT(batch_size, n, db.data());
+        PirLutContext ctx = init_pir_LUT(batch_size, n, db.data());
 
-        uint32_t *res0 = test_dpf_pir_LUT(k0.data(), d_ptrs, batch_size);
-        uint32_t *res1 = test_dpf_pir_LUT(k1.data(), d_ptrs, batch_size);
+        uint32_t *res0 = test_dpf_pir_LUT(k0.data(), ctx, batch_size);
+        uint32_t *res1 = test_dpf_pir_LUT(k1.data(), ctx, batch_size);
 
         std::string error;
         const bool ok = verify_lut_response(res0, res1, db.data(), queries.data(), batch_size, &error);
 
         cudaFreeHost(res0);
         cudaFreeHost(res1);
-        free_cuda_memory(d_ptrs);
+        free_cuda_memory(ctx);
 
         if (!ok)
         {

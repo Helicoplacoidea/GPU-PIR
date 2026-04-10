@@ -1,9 +1,9 @@
 set(CMAKE_CUDA_ARCHITECTURES 89) 
 
 macro (add_test_executable _name)
-    file(GLOB CUSOURCES "${_name}*.cu")
-    file(GLOB SOURCES "${_name}.cpp")
-    file(GLOB CUDA_SOURCES "${CMAKE_SOURCE_DIR}/mpc_cuda/*.cu")
+    file(GLOB CUSOURCES CONFIGURE_DEPENDS "${_name}*.cu")
+    file(GLOB SOURCES CONFIGURE_DEPENDS "${_name}.cpp")
+    file(GLOB CUDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/mpc_cuda/*.cu")
 
     add_executable(${_name} ${SOURCES} ${CUDA_SOURCES} ${CUSOURCES})
     target_link_libraries(${_name} ${EMP-OT_LIBRARIES})
@@ -21,9 +21,9 @@ macro (add_test_executable _name)
 endmacro()
 
 macro (add_bench_executable _name)
-    file(GLOB BENCH_CUSOURCES "${_name}*.cu")
-    file(GLOB BENCH_SOURCES "${_name}.cpp")
-    file(GLOB CUDA_SOURCES "${CMAKE_SOURCE_DIR}/mpc_cuda/*.cu")
+    file(GLOB BENCH_CUSOURCES CONFIGURE_DEPENDS "${_name}*.cu")
+    file(GLOB BENCH_SOURCES CONFIGURE_DEPENDS "${_name}.cpp")
+    file(GLOB CUDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/mpc_cuda/*.cu")
 
     add_executable(${_name} ${BENCH_SOURCES} ${CUDA_SOURCES} ${BENCH_CUSOURCES})
     target_link_libraries(${_name} ${EMP-OT_LIBRARIES})
