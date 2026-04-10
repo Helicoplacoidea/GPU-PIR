@@ -129,6 +129,100 @@ bool verify_public_api_uses_typed_contexts()
            content.find("struct PirLutContext") != std::string::npos &&
            content.find("struct PirStreamContext") != std::string::npos;
 }
+
+bool verify_cuda_runtime_calls_are_checked()
+{
+    std::ifstream input("mpc_cuda/fss_cuda_api.cu");
+    if (!input)
+    {
+        return false;
+    }
+
+    const std::string content((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+
+    if (content.find("#define CUDA_CHECK(") == std::string::npos)
+    {
+        return false;
+    }
+
+    if (content.find("#define CUDA_KERNEL_CHECK(") == std::string::npos)
+    {
+        return false;
+    }
+
+    const std::vector<std::string> forbidden_bare_calls = {
+        "\n    cudaMalloc(",
+        "\n    cudaMemcpy(",
+        "\n    cudaMemcpyAsync(",
+        "\n    cudaMallocHost(",
+        "\n    cudaFree(",
+        "\n    cudaFreeHost(",
+        "\n    cudaStreamCreate(",
+        "\n    cudaStreamDestroy(",
+        "\n    cudaEventCreate(",
+        "\n    cudaEventDestroy(",
+        "\n    cudaStreamWaitEvent(",
+        "\n    cudaEventRecord(",
+        "\n    cudaStreamSynchronize(",
+        "\n    cudaDeviceSynchronize(",
+        "\n    cudaGetDeviceProperties(",
+        "\n    cudaDeviceSetLimit(",
+        "\n    cudaStreamSetAttribute(",
+        "\n    cudaCtxResetPersistingL2Cache("};
+
+    for (const std::string &pattern : forbidden_bare_calls)
+    {
+        if (content.find(pattern) != std::string::npos)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool verify_cmake_configuration_tightened()
+{
+    std::ifstream top_input("CMakeLists.txt");
+    std::ifstream test_input("test/CMakeLists.txt");
+    if (!top_input || !test_input)
+    {
+        return false;
+    }
+
+    const std::string top_content((std::istreambuf_iterator<char>(top_input)),
+                                  std::istreambuf_iterator<char>());
+    const std::string test_content((std::istreambuf_iterator<char>(test_input)),
+                                   std::istreambuf_iterator<char>());
+
+    if (top_content.find("set(CMAKE_CUDA_ARCHITECTURES 89)") == std::string::npos)
+    {
+        return false;
+    }
+
+    const std::vector<std::string> forbidden_top_patterns = {
+        "FIND_PACKAGE(OpenSSL REQUIRED)",
+        "find_package(OpenSSL REQUIRED)",
+        "CMAKE_VERBOSE_MAKEFILE",
+        "-arch=sm_89",
+        "if(CMAKE_CUDA_COMPILER_ID STREQUAL \"NVIDIA\")\nendif()"};
+
+    for (const std::string &pattern : forbidden_top_patterns)
+    {
+        if (top_content.find(pattern) != std::string::npos)
+        {
+            return false;
+        }
+    }
+
+    if (test_content.find("set(CMAKE_CUDA_ARCHITECTURES 89)") != std::string::npos)
+    {
+        return false;
+    }
+
+    return true;
+}
 } // namespace
 
 int main()
@@ -172,6 +266,18 @@ int main()
     if (!verify_public_api_uses_typed_contexts())
     {
         std::cerr << "Public API still uses vector<void*> instead of typed contexts\n";
+        return 1;
+    }
+
+    if (!verify_cuda_runtime_calls_are_checked())
+    {
+        std::cerr << "CUDA runtime calls are not wrapped by the unified error checks\n";
+        return 1;
+    }
+
+    if (!verify_cmake_configuration_tightened())
+    {
+        std::cerr << "CMake configuration still contains the redundant settings slated for cleanup\n";
         return 1;
     }
 

@@ -1,11 +1,4 @@
-set(CMAKE_CUDA_ARCHITECTURES 89) 
-
-macro (add_test_executable _name)
-    file(GLOB CUSOURCES CONFIGURE_DEPENDS "${_name}*.cu")
-    file(GLOB SOURCES CONFIGURE_DEPENDS "${_name}.cpp")
-    file(GLOB CUDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/mpc_cuda/*.cu")
-
-    add_executable(${_name} ${SOURCES} ${CUDA_SOURCES} ${CUSOURCES})
+function(configure_pir_target _name _enable_lineinfo)
     target_link_libraries(${_name} ${EMP-OT_LIBRARIES})
     target_include_directories(${_name} PRIVATE
         ${PROJECT_SOURCE_DIR}/mpc_keys
@@ -14,10 +7,22 @@ macro (add_test_executable _name)
     target_compile_definitions(${_name} PRIVATE
         "entry_size=16"
         "NUM_STREAMS=10"
-        "NUM_CHUNKS=32768")
-    target_compile_options(${_name} PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
+        "NUM_CHUNKS=32768"
     )
+    if(_enable_lineinfo)
+        target_compile_options(${_name} PRIVATE
+            $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>
+        )
+    endif()
+endfunction()
+
+macro (add_test_executable _name)
+    file(GLOB CUSOURCES CONFIGURE_DEPENDS "${_name}*.cu")
+    file(GLOB SOURCES CONFIGURE_DEPENDS "${_name}.cpp")
+    file(GLOB CUDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/mpc_cuda/*.cu")
+
+    add_executable(${_name} ${SOURCES} ${CUDA_SOURCES} ${CUSOURCES})
+    configure_pir_target(${_name} TRUE)
 endmacro()
 
 macro (add_bench_executable _name)
@@ -26,15 +31,7 @@ macro (add_bench_executable _name)
     file(GLOB CUDA_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/mpc_cuda/*.cu")
 
     add_executable(${_name} ${BENCH_SOURCES} ${CUDA_SOURCES} ${BENCH_CUSOURCES})
-    target_link_libraries(${_name} ${EMP-OT_LIBRARIES})
-    target_include_directories(${_name} PRIVATE
-        ${PROJECT_SOURCE_DIR}/mpc_keys
-        /usr/local/cuda/include
-    )
-    target_compile_definitions(${_name} PRIVATE
-        "entry_size=16"
-        "NUM_STREAMS=10"
-        "NUM_CHUNKS=32768")
+    configure_pir_target(${_name} FALSE)
 endmacro()
 
 macro (add_test_case_with_run _name)

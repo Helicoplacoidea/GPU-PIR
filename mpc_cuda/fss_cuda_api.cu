@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -9,6 +10,38 @@
 
 namespace
 {
+[[noreturn]] void fail_cuda_call(cudaError_t error, const char *expr, const char *file, int line)
+{
+    std::fprintf(stderr, "CUDA error at %s:%d for %s: %s\n", file, line, expr, cudaGetErrorString(error));
+    std::abort();
+}
+
+void check_last_kernel(const char *expr, const char *file, int line)
+{
+    const cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess)
+    {
+        fail_cuda_call(error, expr, file, line);
+    }
+}
+
+#define CUDA_CHECK(expr)                                                                 \
+    do                                                                                   \
+    {                                                                                    \
+        const cudaError_t cuda_check_error__ = (expr);                                   \
+        if (cuda_check_error__ != cudaSuccess)                                           \
+        {                                                                                \
+            fail_cuda_call(cuda_check_error__, #expr, __FILE__, __LINE__);               \
+        }                                                                                \
+    } while (0)
+
+#define CUDA_KERNEL_CHECK(...)                                                           \
+    do                                                                                   \
+    {                                                                                    \
+        __VA_ARGS__;                                                                     \
+        check_last_kernel(#__VA_ARGS__, __FILE__, __LINE__);                             \
+    } while (0)
+
 size_t key_record_size(int maxlayer)
 {
     return static_cast<size_t>(1 + 16 + 1 + 18 * maxlayer + 16);
@@ -30,7 +63,7 @@ void free_device_ptr(void *&ptr)
 {
     if (ptr != nullptr)
     {
-        cudaFree(ptr);
+        CUDA_CHECK(cudaFree(ptr));
         ptr = nullptr;
     }
 }
@@ -45,30 +78,30 @@ T *device_ptr(void *ptr)
 extern "C" void cudaDPFkeygen(uint8_t *k0, uint8_t *k1, uint64_t *alpha, int n, int maxlayer, int batch_size)
 {
     uint8_t *k0_device;
-    cudaMalloc(&k0_device, batch_size * key_record_size(maxlayer));
+    CUDA_CHECK(cudaMalloc(&k0_device, batch_size * key_record_size(maxlayer)));
 
     uint8_t *k1_device;
-    cudaMalloc(&k1_device, batch_size * key_record_size(maxlayer));
+    CUDA_CHECK(cudaMalloc(&k1_device, batch_size * key_record_size(maxlayer)));
 
     uint64_t *alpha_device;
-    cudaMalloc(&alpha_device, batch_size * sizeof(uint64_t));
-    cudaMemcpy(alpha_device, alpha, batch_size * sizeof(uint64_t), cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&alpha_device, batch_size * sizeof(uint64_t)));
+    CUDA_CHECK(cudaMemcpy(alpha_device, alpha, batch_size * sizeof(uint64_t), cudaMemcpyHostToDevice));
 
     uint32_t *aes_key;
-    cudaMalloc(&aes_key, 4 * (14 + 1) * sizeof(uint32_t));
-    fss_genaeskey_kernel<<<1, 1>>>(aes_key);
+    CUDA_CHECK(cudaMalloc(&aes_key, 4 * (14 + 1) * sizeof(uint32_t)));
+    CUDA_KERNEL_CHECK(fss_genaeskey_kernel<<<1, 1>>>(aes_key));
 
     const int threads = batch_size > 256 ? 256 : batch_size;
     const int blocks = (batch_size + threads - 1) / threads;
-    dpf_gen_kernel<<<blocks, threads>>>(aes_key, alpha_device, n, k0_device, k1_device, batch_size, maxlayer);
+    CUDA_KERNEL_CHECK(dpf_gen_kernel<<<blocks, threads>>>(aes_key, alpha_device, n, k0_device, k1_device, batch_size, maxlayer));
 
-    cudaMemcpy(k0, k0_device, batch_size * key_record_size(maxlayer), cudaMemcpyDeviceToHost);
-    cudaMemcpy(k1, k1_device, batch_size * key_record_size(maxlayer), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(k0, k0_device, batch_size * key_record_size(maxlayer), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(k1, k1_device, batch_size * key_record_size(maxlayer), cudaMemcpyDeviceToHost));
 
-    cudaFree(k0_device);
-    cudaFree(k1_device);
-    cudaFree(alpha_device);
-    cudaFree(aes_key);
+    CUDA_CHECK(cudaFree(k0_device));
+    CUDA_CHECK(cudaFree(k1_device));
+    CUDA_CHECK(cudaFree(alpha_device));
+    CUDA_CHECK(cudaFree(aes_key));
 }
 
 extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
@@ -80,19 +113,19 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
     size_t total_cuda_malloc = 0;
 
     uint128_t *d_db;
-    cudaMalloc(&d_db, db_size);
-    cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_db, db_size));
+    CUDA_CHECK(cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice));
     ctx.db = d_db;
 
     uint128_t *blocksum_cuda;
     const size_t blocksum_size = N * ((size_t(1) << n) / 256) * sizeof(uint128_t) * entry_size;
-    cudaMalloc(&blocksum_cuda, blocksum_size);
+    CUDA_CHECK(cudaMalloc(&blocksum_cuda, blocksum_size));
     total_cuda_malloc += blocksum_size;
     ctx.blocksum = blocksum_cuda;
 
     uint8_t *d_key;
     const size_t key_size = key_buffer_size(N, static_cast<int>(maxlayer));
-    cudaMalloc(&d_key, key_size);
+    CUDA_CHECK(cudaMalloc(&d_key, key_size));
     total_cuda_malloc += key_size;
     ctx.key = d_key;
 
@@ -112,13 +145,13 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
     const size_t size_d_t_res = N * (size_t(1) << maxlayer) * sizeof(uint32_t);
     const size_t size_d_se = N * (size_t(1) << maxlayer) * sizeof(uint128_t);
 
-    cudaMalloc(&d_s, size_d_s);
-    cudaMalloc(&d_t, size_d_t);
-    cudaMalloc(&d_s_intermediate, size_d_s_intermediate);
-    cudaMalloc(&d_t_intermediate, size_d_t_intermediate);
-    cudaMalloc(&d_s_res, size_d_s_res);
-    cudaMalloc(&d_t_res, size_d_t_res);
-    cudaMalloc(&d_se, size_d_se);
+    CUDA_CHECK(cudaMalloc(&d_s, size_d_s));
+    CUDA_CHECK(cudaMalloc(&d_t, size_d_t));
+    CUDA_CHECK(cudaMalloc(&d_s_intermediate, size_d_s_intermediate));
+    CUDA_CHECK(cudaMalloc(&d_t_intermediate, size_d_t_intermediate));
+    CUDA_CHECK(cudaMalloc(&d_s_res, size_d_s_res));
+    CUDA_CHECK(cudaMalloc(&d_t_res, size_d_t_res));
+    CUDA_CHECK(cudaMalloc(&d_se, size_d_se));
 
     total_cuda_malloc += size_d_s + size_d_t + size_d_s_intermediate + size_d_t_intermediate + size_d_s_res + size_d_t_res + size_d_se;
 
@@ -132,9 +165,9 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
 
     uint32_t *aes_key;
     const size_t aes_key_size = 4 * (14 + 1) * sizeof(uint32_t);
-    cudaMalloc(&aes_key, aes_key_size);
+    CUDA_CHECK(cudaMalloc(&aes_key, aes_key_size));
     total_cuda_malloc += aes_key_size;
-    fss_genaeskey_kernel<<<1, 1>>>(aes_key);
+    CUDA_KERNEL_CHECK(fss_genaeskey_kernel<<<1, 1>>>(aes_key));
     ctx.aes_key = aes_key;
 
     print_allocated_cuda_memory(total_cuda_malloc);
@@ -151,8 +184,8 @@ extern "C++" PirPipelineContext init_pir_pipeline(int N, int n, uint128_t *db)
     size_t total_cuda_malloc = 0;
 
     uint128_t *d_db;
-    cudaMalloc(&d_db, db_size);
-    cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_db, db_size));
+    CUDA_CHECK(cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice));
     ctx.db = d_db;
 
     uint128_t *d_input;
@@ -160,8 +193,8 @@ extern "C++" PirPipelineContext init_pir_pipeline(int N, int n, uint128_t *db)
     const size_t size_input = entry_size * chunk_size * sizeof(uint128_t);
     const size_t size_output = entry_size * sizeof(uint128_t);
 
-    cudaMalloc(&d_input, size_input);
-    cudaMalloc(&d_output, size_output);
+    CUDA_CHECK(cudaMalloc(&d_input, size_input));
+    CUDA_CHECK(cudaMalloc(&d_output, size_output));
     total_cuda_malloc += size_input + size_output;
     ctx.input = d_input;
     ctx.output = d_output;
@@ -182,13 +215,13 @@ extern "C++" PirPipelineContext init_pir_pipeline(int N, int n, uint128_t *db)
     const size_t size_d_t_res = (size_t(1) << maxlayer) * sizeof(uint32_t);
     const size_t size_d_se = (size_t(1) << maxlayer) * sizeof(uint128_t);
 
-    cudaMalloc(&d_s, size_d_s);
-    cudaMalloc(&d_t, size_d_t);
-    cudaMalloc(&d_s_intermediate, size_d_s_intermediate);
-    cudaMalloc(&d_t_intermediate, size_d_t_intermediate);
-    cudaMalloc(&d_s_res, size_d_s_res);
-    cudaMalloc(&d_t_res, size_d_t_res);
-    cudaMalloc(&d_se, size_d_se);
+    CUDA_CHECK(cudaMalloc(&d_s, size_d_s));
+    CUDA_CHECK(cudaMalloc(&d_t, size_d_t));
+    CUDA_CHECK(cudaMalloc(&d_s_intermediate, size_d_s_intermediate));
+    CUDA_CHECK(cudaMalloc(&d_t_intermediate, size_d_t_intermediate));
+    CUDA_CHECK(cudaMalloc(&d_s_res, size_d_s_res));
+    CUDA_CHECK(cudaMalloc(&d_t_res, size_d_t_res));
+    CUDA_CHECK(cudaMalloc(&d_se, size_d_se));
 
     total_cuda_malloc += size_d_s + size_d_t + size_d_s_intermediate + size_d_t_intermediate + size_d_s_res + size_d_t_res + size_d_se;
 
@@ -202,9 +235,9 @@ extern "C++" PirPipelineContext init_pir_pipeline(int N, int n, uint128_t *db)
 
     uint32_t *aes_key;
     const size_t aes_key_size = 4 * (14 + 1) * sizeof(uint32_t);
-    cudaMalloc(&aes_key, aes_key_size);
+    CUDA_CHECK(cudaMalloc(&aes_key, aes_key_size));
     total_cuda_malloc += aes_key_size;
-    fss_genaeskey_kernel<<<1, 1>>>(aes_key);
+    CUDA_KERNEL_CHECK(fss_genaeskey_kernel<<<1, 1>>>(aes_key));
     ctx.aes_key = aes_key;
 
     print_allocated_cuda_memory(total_cuda_malloc);
@@ -219,16 +252,16 @@ extern "C++" PirLutContext init_pir_LUT(int N, int n, uint32_t *db)
 
     uint32_t *d_db;
     const uint64_t db_size = (uint64_t(1) << n) * sizeof(uint32_t);
-    cudaMalloc(&d_db, db_size);
-    cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_db, db_size));
+    CUDA_CHECK(cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice));
     ctx.db = d_db;
 
     uint32_t *d_input;
     uint32_t *d_intermediate;
     uint32_t *d_output;
-    cudaMalloc(&d_input, N * chunk_size * sizeof(uint32_t));
-    cudaMalloc(&d_intermediate, N * chunk_size / 256 * sizeof(uint32_t));
-    cudaMalloc(&d_output, N * sizeof(uint32_t));
+    CUDA_CHECK(cudaMalloc(&d_input, N * chunk_size * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_intermediate, N * chunk_size / 256 * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_output, N * sizeof(uint32_t)));
     ctx.input = d_input;
     ctx.intermediate = d_intermediate;
     ctx.output = d_output;
@@ -241,13 +274,13 @@ extern "C++" PirLutContext init_pir_LUT(int N, int n, uint32_t *db)
     uint32_t *d_t_intermediate;
     uint32_t *d_t_res;
 
-    cudaMalloc(&d_s, N * sizeof(uint128_t));
-    cudaMalloc(&d_t, N * sizeof(uint32_t));
-    cudaMalloc(&d_s_intermediate, N * (size_t(1) << 10) * sizeof(uint128_t));
-    cudaMalloc(&d_t_intermediate, N * (size_t(1) << 10) * sizeof(uint32_t));
-    cudaMalloc(&d_s_res, N * 2 * (size_t(1) << maxlayer) * sizeof(uint128_t));
-    cudaMalloc(&d_t_res, N * 2 * (size_t(1) << maxlayer) * sizeof(uint32_t));
-    cudaMalloc(&d_se, N * (size_t(1) << maxlayer) * sizeof(uint128_t));
+    CUDA_CHECK(cudaMalloc(&d_s, N * sizeof(uint128_t)));
+    CUDA_CHECK(cudaMalloc(&d_t, N * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_s_intermediate, N * (size_t(1) << 10) * sizeof(uint128_t)));
+    CUDA_CHECK(cudaMalloc(&d_t_intermediate, N * (size_t(1) << 10) * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_s_res, N * 2 * (size_t(1) << maxlayer) * sizeof(uint128_t)));
+    CUDA_CHECK(cudaMalloc(&d_t_res, N * 2 * (size_t(1) << maxlayer) * sizeof(uint32_t)));
+    CUDA_CHECK(cudaMalloc(&d_se, N * (size_t(1) << maxlayer) * sizeof(uint128_t)));
 
     ctx.seed = d_s;
     ctx.bit = d_t;
@@ -258,8 +291,8 @@ extern "C++" PirLutContext init_pir_LUT(int N, int n, uint32_t *db)
     ctx.selection = d_se;
 
     uint32_t *aes_key;
-    cudaMalloc(&aes_key, 4 * (14 + 1) * sizeof(uint32_t));
-    fss_genaeskey_kernel<<<1, 1>>>(aes_key);
+    CUDA_CHECK(cudaMalloc(&aes_key, 4 * (14 + 1) * sizeof(uint32_t)));
+    CUDA_KERNEL_CHECK(fss_genaeskey_kernel<<<1, 1>>>(aes_key));
     ctx.aes_key = aes_key;
 
     std::cout << "CUDA memory initialized successfully!" << std::endl;
@@ -336,9 +369,9 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
     uint128_t *res = static_cast<uint128_t *>(malloc(N * sizeof(uint128_t) * entry_size));
     std::memset(res, 0, N * entry_size * sizeof(uint128_t));
 
-    cudaMemcpy(d_key, key, key_size, cudaMemcpyHostToDevice);
-    seed_copy<<<(N + 255) / 256, 256>>>(d_s, d_t, d_key, maxlayer, N);
-    cudaDeviceSynchronize();
+    CUDA_CHECK(cudaMemcpy(d_key, key, key_size, cudaMemcpyHostToDevice));
+    CUDA_KERNEL_CHECK(seed_copy<<<(N + 255) / 256, 256>>>(d_s, d_t, d_key, maxlayer, N));
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     int threads_per_block;
     int blocks_per_grid;
@@ -346,35 +379,29 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
 
     if (maxlayer <= r)
     {
-        EvalAll_BlockEvaluation<<<N, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_s_res, d_t_res);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_s_res, d_t_res));
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
     else
     {
-        EvalAll_BlockEvaluation<<<N, (1 << (maxlayer - r)) / 2>>>(aes_key, maxlayer - r, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N, (1 << (maxlayer - r)) / 2>>>(aes_key, maxlayer - r, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate));
+        CUDA_CHECK(cudaDeviceSynchronize());
 
-        EvalAll_BlockEvaluation<<<N * (1 << (maxlayer - r)), (1 << r) / 2>>>(aes_key, r, maxlayer - r, d_key, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N * (1 << (maxlayer - r)), (1 << r) / 2>>>(aes_key, r, maxlayer - r, d_key, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res));
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
 
     threads_per_block = std::min(1 << maxlayer, 256);
     blocks_per_grid = (1 << maxlayer) / threads_per_block;
-    EvalAll_SeGeneration<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se);
-    cudaDeviceSynchronize();
+    CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se));
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     threads_per_block = 256;
-    MultiplicationReduction_grid_row<<<N, threads_per_block / 2>>>(d_key, d_se, d_db, blocksum_cuda, 1, N);
-    cudaDeviceSynchronize();
+    CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<N, threads_per_block / 2>>>(d_key, d_se, d_db, blocksum_cuda, 1, N));
+    CUDA_CHECK(cudaDeviceSynchronize());
 
-    cudaMemcpy(res, blocksum_cuda, N * sizeof(uint128_t) * entry_size, cudaMemcpyDeviceToHost);
-    cudaDeviceSynchronize();
-
-    const cudaError_t error = cudaGetLastError();
-    if (error != cudaSuccess)
-    {
-        printf("CUDA error: %s\n", cudaGetErrorString(error));
-    }
+    CUDA_CHECK(cudaMemcpy(res, blocksum_cuda, N * sizeof(uint128_t) * entry_size, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     return res;
 }
@@ -386,7 +413,7 @@ extern "C++" PirStreamContext init_streams_and_events()
     cudaStream_t *streams = new cudaStream_t[NUM_STREAMS];
     for (int i = 0; i < NUM_STREAMS; ++i)
     {
-        cudaStreamCreate(&streams[i]);
+        CUDA_CHECK(cudaStreamCreate(&streams[i]));
     }
     handles.streams = streams;
 
@@ -395,7 +422,7 @@ extern "C++" PirStreamContext init_streams_and_events()
     {
         for (int stream = 0; stream < NUM_STREAMS; ++stream)
         {
-            cudaEventCreate(&events[chunk][stream]);
+            CUDA_CHECK(cudaEventCreate(&events[chunk][stream]));
         }
     }
     handles.events = events;
@@ -411,7 +438,7 @@ extern "C++" void cleanup_streams_and_events(PirStreamContext &handles)
     {
         for (int i = 0; i < NUM_STREAMS; ++i)
         {
-            cudaStreamDestroy(streams[i]);
+            CUDA_CHECK(cudaStreamDestroy(streams[i]));
         }
         delete[] streams;
         handles.streams = nullptr;
@@ -424,7 +451,7 @@ extern "C++" void cleanup_streams_and_events(PirStreamContext &handles)
         {
             for (int stream = 0; stream < NUM_STREAMS; ++stream)
             {
-                cudaEventDestroy(events[chunk][stream]);
+                CUDA_CHECK(cudaEventDestroy(events[chunk][stream]));
             }
         }
         delete[] events;
@@ -453,14 +480,14 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
     uint32_t *aes_key = device_ptr<uint32_t>(ctx.aes_key);
 
     uint8_t *key_pinned;
-    cudaMallocHost(&key_pinned, key_size);
+    CUDA_CHECK(cudaMallocHost(&key_pinned, key_size));
     std::memcpy(key_pinned, key, key_size);
 
     uint8_t *d_key;
-    cudaMalloc(&d_key, key_size);
+    CUDA_CHECK(cudaMalloc(&d_key, key_size));
 
     uint128_t *res;
-    cudaMallocHost(&res, entry_size * N * sizeof(uint128_t));
+    CUDA_CHECK(cudaMallocHost(&res, entry_size * N * sizeof(uint128_t)));
 
     cudaStream_t *streams = static_cast<cudaStream_t *>(handles.streams);
     cudaEvent_t(*events)[NUM_STREAMS] = static_cast<cudaEvent_t(*)[NUM_STREAMS]>(handles.events);
@@ -470,11 +497,11 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
 
 #ifdef USE_L2_CACHE
     cudaDeviceProp prop;
-    cudaGetDeviceProperties(&prop, 0);
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
 
     const size_t size = std::min(static_cast<size_t>(prop.l2CacheSize * 0.75),
                                  static_cast<size_t>(prop.persistingL2CacheMaxSize));
-    cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, size);
+    CUDA_CHECK(cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, size));
 
     const size_t window_size = std::min((uint64_t)prop.accessPolicyMaxWindowSize, (((uint64_t)1 << n) * entry_size * 16));
 
@@ -485,7 +512,7 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
     stream_attribute.accessPolicyWindow.hitProp = cudaAccessPropertyPersisting;
     stream_attribute.accessPolicyWindow.missProp = cudaAccessPropertyStreaming;
 
-    cudaStreamSetAttribute(streams[4], cudaStreamAttributeAccessPolicyWindow, &stream_attribute);
+    CUDA_CHECK(cudaStreamSetAttribute(streams[4], cudaStreamAttributeAccessPolicyWindow, &stream_attribute));
 #endif
 
     for (int chunk = 0; chunk < N; ++chunk)
@@ -497,35 +524,35 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
         {
             if (chunk > 0)
             {
-                cudaStreamWaitEvent(streams[1], events[chunk - 1][3], 0);
+                CUDA_CHECK(cudaStreamWaitEvent(streams[1], events[chunk - 1][3], 0));
             }
-            cudaMemcpyAsync(d_s, host_key_offset + 1, 16, cudaMemcpyHostToDevice, streams[1]);
-            cudaMemcpyAsync(d_t, host_key_offset + 17, 1, cudaMemcpyHostToDevice, streams[1]);
-            cudaMemcpyAsync(d_key_offset, host_key_offset, key_record_size(maxlayer), cudaMemcpyHostToDevice, streams[1]);
+            CUDA_CHECK(cudaMemcpyAsync(d_s, host_key_offset + 1, 16, cudaMemcpyHostToDevice, streams[1]));
+            CUDA_CHECK(cudaMemcpyAsync(d_t, host_key_offset + 17, 1, cudaMemcpyHostToDevice, streams[1]));
+            CUDA_CHECK(cudaMemcpyAsync(d_key_offset, host_key_offset, key_record_size(maxlayer), cudaMemcpyHostToDevice, streams[1]));
 
-            EvalAll_BlockEvaluation<<<1, (1 << maxlayer) / 2, 0, streams[1]>>>(aes_key, maxlayer, 0, d_key_offset, d_s, d_t, d_s_res, d_t_res);
-            cudaEventRecord(events[chunk][1], streams[1]);
+            CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<1, (1 << maxlayer) / 2, 0, streams[1]>>>(aes_key, maxlayer, 0, d_key_offset, d_s, d_t, d_s_res, d_t_res));
+            CUDA_CHECK(cudaEventRecord(events[chunk][1], streams[1]));
         }
         else
         {
             if (chunk > 0)
             {
-                cudaStreamWaitEvent(streams[1], events[chunk - 1][2], 0);
+                CUDA_CHECK(cudaStreamWaitEvent(streams[1], events[chunk - 1][2], 0));
             }
-            cudaMemcpyAsync(d_s, host_key_offset + 1, 16, cudaMemcpyHostToDevice, streams[1]);
-            cudaMemcpyAsync(d_t, host_key_offset + 17, 1, cudaMemcpyHostToDevice, streams[1]);
-            cudaMemcpyAsync(d_key_offset, host_key_offset, key_record_size(maxlayer), cudaMemcpyHostToDevice, streams[1]);
+            CUDA_CHECK(cudaMemcpyAsync(d_s, host_key_offset + 1, 16, cudaMemcpyHostToDevice, streams[1]));
+            CUDA_CHECK(cudaMemcpyAsync(d_t, host_key_offset + 17, 1, cudaMemcpyHostToDevice, streams[1]));
+            CUDA_CHECK(cudaMemcpyAsync(d_key_offset, host_key_offset, key_record_size(maxlayer), cudaMemcpyHostToDevice, streams[1]));
 
-            EvalAll_BlockEvaluation<<<1, (1 << (maxlayer - 9)) / 2, 0, streams[1]>>>(aes_key, maxlayer - 9, 0, d_key_offset, d_s, d_t, d_s_intermediate, d_t_intermediate);
-            cudaEventRecord(events[chunk][1], streams[1]);
+            CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<1, (1 << (maxlayer - 9)) / 2, 0, streams[1]>>>(aes_key, maxlayer - 9, 0, d_key_offset, d_s, d_t, d_s_intermediate, d_t_intermediate));
+            CUDA_CHECK(cudaEventRecord(events[chunk][1], streams[1]));
 
             if (chunk > 0)
             {
-                cudaStreamWaitEvent(streams[2], events[chunk - 1][3], 0);
+                CUDA_CHECK(cudaStreamWaitEvent(streams[2], events[chunk - 1][3], 0));
             }
-            cudaStreamWaitEvent(streams[2], events[chunk][1], 0);
-            EvalAll_BlockEvaluation<<<1 << (maxlayer - 9), (1 << 9) / 2, 0, streams[2]>>>(aes_key, 9, maxlayer - 9, d_key_offset, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res);
-            cudaEventRecord(events[chunk][2], streams[2]);
+            CUDA_CHECK(cudaStreamWaitEvent(streams[2], events[chunk][1], 0));
+            CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<1 << (maxlayer - 9), (1 << 9) / 2, 0, streams[2]>>>(aes_key, 9, maxlayer - 9, d_key_offset, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res));
+            CUDA_CHECK(cudaEventRecord(events[chunk][2], streams[2]));
         }
 
         threads_per_block = std::min(1 << maxlayer, 256);
@@ -533,51 +560,45 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
 
         if (chunk > 0)
         {
-            cudaStreamWaitEvent(streams[3], events[chunk - 1][4], 0);
+            CUDA_CHECK(cudaStreamWaitEvent(streams[3], events[chunk - 1][4], 0));
         }
         if (maxlayer <= 10)
         {
-            cudaStreamWaitEvent(streams[3], events[chunk][1], 0);
+            CUDA_CHECK(cudaStreamWaitEvent(streams[3], events[chunk][1], 0));
         }
         else
         {
-            cudaStreamWaitEvent(streams[3], events[chunk][2], 0);
+            CUDA_CHECK(cudaStreamWaitEvent(streams[3], events[chunk][2], 0));
         }
-        EvalAll_SeGeneration<<<blocks_per_grid, threads_per_block, 0, streams[3]>>>(d_key_offset, d_s_res, d_t_res, d_se);
-        cudaEventRecord(events[chunk][3], streams[3]);
+        CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<blocks_per_grid, threads_per_block, 0, streams[3]>>>(d_key_offset, d_s_res, d_t_res, d_se));
+        CUDA_CHECK(cudaEventRecord(events[chunk][3], streams[3]));
 
         threads_per_block = 256;
         blocks_per_grid = (1 << n) / threads_per_block;
         if (chunk > 0)
         {
-            cudaStreamWaitEvent(streams[4], events[chunk - 1][5], 0);
+            CUDA_CHECK(cudaStreamWaitEvent(streams[4], events[chunk - 1][5], 0));
         }
-        cudaStreamWaitEvent(streams[4], events[chunk][3], 0);
+        CUDA_CHECK(cudaStreamWaitEvent(streams[4], events[chunk][3], 0));
 
-        MultiplicationReduction_grid_row<<<256, threads_per_block / 2, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_input, 1, 1);
-        cudaEventRecord(events[chunk][4], streams[4]);
+        CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<256, threads_per_block / 2, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_input, 1, 1));
+        CUDA_CHECK(cudaEventRecord(events[chunk][4], streams[4]));
 
-        cudaStreamWaitEvent(streams[5], events[chunk][4], 0);
-        BlockReduction<<<1, 256, 0, streams[5]>>>(d_input, d_output);
-        cudaEventRecord(events[chunk][5], streams[5]);
-        cudaMemcpyAsync(res + entry_size * chunk, d_output, entry_size * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[5]);
+        CUDA_CHECK(cudaStreamWaitEvent(streams[5], events[chunk][4], 0));
+        CUDA_KERNEL_CHECK(BlockReduction<<<1, 256, 0, streams[5]>>>(d_input, d_output));
+        CUDA_CHECK(cudaEventRecord(events[chunk][5], streams[5]));
+        CUDA_CHECK(cudaMemcpyAsync(res + entry_size * chunk, d_output, entry_size * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[5]));
     }
 #ifdef L2_CACHE
-    cudaCtxResetPersistingL2Cache();
+    CUDA_CHECK(cudaCtxResetPersistingL2Cache());
 #endif
     for (int i = 0; i < NUM_STREAMS; ++i)
     {
-        cudaStreamSynchronize(streams[i]);
+        CUDA_CHECK(cudaStreamSynchronize(streams[i]));
     }
 
-    const cudaError_t error = cudaGetLastError();
-    if (error != cudaSuccess)
-    {
-        printf("CUDA error: %s\n", cudaGetErrorString(error));
-    }
-
-    cudaFree(d_key);
-    cudaFreeHost(key_pinned);
+    CUDA_CHECK(cudaFree(d_key));
+    CUDA_CHECK(cudaFreeHost(key_pinned));
     return res;
 }
 
@@ -601,102 +622,96 @@ extern "C++" uint32_t *test_dpf_pir_LUT(uint8_t *key, const PirLutContext &ctx, 
     uint32_t *aes_key = device_ptr<uint32_t>(ctx.aes_key);
 
     uint8_t *key_pinned;
-    cudaMallocHost(&key_pinned, key_size);
+    CUDA_CHECK(cudaMallocHost(&key_pinned, key_size));
     std::memcpy(key_pinned, key, key_size);
 
     uint8_t *d_key;
-    cudaMalloc(&d_key, key_size);
-    cudaMemcpy(d_key, key_pinned, key_size, cudaMemcpyHostToDevice);
+    CUDA_CHECK(cudaMalloc(&d_key, key_size));
+    CUDA_CHECK(cudaMemcpy(d_key, key_pinned, key_size, cudaMemcpyHostToDevice));
 
     uint32_t *res;
-    cudaMallocHost(&res, N * sizeof(uint32_t));
+    CUDA_CHECK(cudaMallocHost(&res, N * sizeof(uint32_t)));
 
-    seed_copy<<<(N + 255) / 256, 256>>>(d_s, d_t, d_key, maxlayer, N);
-    cudaDeviceSynchronize();
+    CUDA_KERNEL_CHECK(seed_copy<<<(N + 255) / 256, 256>>>(d_s, d_t, d_key, maxlayer, N));
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     int threads_per_block;
     int blocks_per_grid;
 
     if (maxlayer <= 9)
     {
-        EvalAll_BlockEvaluation<<<N, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_s_res, d_t_res);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_s_res, d_t_res));
+        CUDA_CHECK(cudaDeviceSynchronize());
 
         threads_per_block = std::min(1 << maxlayer, 256);
         blocks_per_grid = (1 << maxlayer) / threads_per_block;
-        EvalAll_SeGeneration<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se));
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
     else if (maxlayer <= 18)
     {
-        EvalAll_BlockEvaluation<<<N, (1 << (maxlayer - 9)) / 2>>>(aes_key, maxlayer - 9, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N, (1 << (maxlayer - 9)) / 2>>>(aes_key, maxlayer - 9, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate));
+        CUDA_CHECK(cudaDeviceSynchronize());
 
-        EvalAll_BlockEvaluation<<<N * (1 << (maxlayer - 9)), (1 << 9) / 2>>>(aes_key, 9, maxlayer - 9, d_key, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N * (1 << (maxlayer - 9)), (1 << 9) / 2>>>(aes_key, 9, maxlayer - 9, d_key, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res));
+        CUDA_CHECK(cudaDeviceSynchronize());
 
         threads_per_block = std::min(1 << maxlayer, 256);
         blocks_per_grid = (1 << maxlayer) / threads_per_block;
-        EvalAll_SeGeneration<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se));
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
     else
     {
-        EvalAll_BlockEvaluation<<<1, (1 << 9) / 2>>>(aes_key, 9, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<1, (1 << 9) / 2>>>(aes_key, 9, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate));
+        CUDA_CHECK(cudaDeviceSynchronize());
 
-        EvalAll_BlockEvaluation<<<1 << 9, (1 << 9) / 2>>>(aes_key, 9, 9, d_key, d_s_intermediate, d_t_intermediate, d_s_res + ((1 << 18) - 1), d_t_res + ((1 << 18) - 1));
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<1 << 9, (1 << 9) / 2>>>(aes_key, 9, 9, d_key, d_s_intermediate, d_t_intermediate, d_s_res + ((1 << 18) - 1), d_t_res + ((1 << 18) - 1)));
+        CUDA_CHECK(cudaDeviceSynchronize());
 
         for (int layer = 19; layer <= maxlayer; ++layer)
         {
             const int threads_per_layer = 1 << (layer - 1);
             threads_per_block = std::min(threads_per_layer, 256);
             blocks_per_grid = (threads_per_layer + threads_per_block - 1) / threads_per_block;
-            EvalAll_LBLEvaluation<<<blocks_per_grid, threads_per_block>>>(aes_key, layer, maxlayer, 1, d_key, d_s_res, d_t_res);
-            cudaDeviceSynchronize();
+            CUDA_KERNEL_CHECK(EvalAll_LBLEvaluation<<<blocks_per_grid, threads_per_block>>>(aes_key, layer, maxlayer, 1, d_key, d_s_res, d_t_res));
+            CUDA_CHECK(cudaDeviceSynchronize());
         }
 
         threads_per_block = std::min(1 << maxlayer, 256);
         blocks_per_grid = (1 << maxlayer) / threads_per_block;
-        EVAL_Pack_last_layer_gense<<<blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(EVAL_Pack_last_layer_gense<<<blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se));
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
 
     threads_per_block = 256;
     blocks_per_grid = (1 << n) / threads_per_block;
     blocks_per_grid = std::min(blocks_per_grid, 768);
 
-    MultiplicationReduction_LUT_new<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_se, d_db, d_input, 1, N);
-    cudaDeviceSynchronize();
+    CUDA_KERNEL_CHECK(MultiplicationReduction_LUT_new<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_se, d_db, d_input, 1, N));
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     if (n == 8)
     {
-        cudaMemcpy(res, d_input, N * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+        CUDA_CHECK(cudaMemcpy(res, d_input, N * sizeof(uint32_t), cudaMemcpyDeviceToHost));
     }
 
     if (blocks_per_grid > 256)
     {
         blocks_per_grid = (blocks_per_grid + 255) / 256;
-        BlockReduction_LUT<<<N * blocks_per_grid, 256>>>(d_input, d_intermediate);
-        cudaDeviceSynchronize();
-        BlockReduction_LUT<<<N, blocks_per_grid>>>(d_intermediate, d_output);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(BlockReduction_LUT<<<N * blocks_per_grid, 256>>>(d_input, d_intermediate));
+        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_KERNEL_CHECK(BlockReduction_LUT<<<N, blocks_per_grid>>>(d_intermediate, d_output));
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
     else
     {
-        BlockReduction_LUT<<<N, blocks_per_grid>>>(d_input, d_output);
-        cudaDeviceSynchronize();
+        CUDA_KERNEL_CHECK(BlockReduction_LUT<<<N, blocks_per_grid>>>(d_input, d_output));
+        CUDA_CHECK(cudaDeviceSynchronize());
     }
-    cudaMemcpy(res, d_output, N * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+    CUDA_CHECK(cudaMemcpy(res, d_output, N * sizeof(uint32_t), cudaMemcpyDeviceToHost));
 
-    const cudaError_t error = cudaGetLastError();
-    if (error != cudaSuccess)
-    {
-        printf("CUDA error: %s\n", cudaGetErrorString(error));
-    }
-
-    cudaFree(d_key);
-    cudaFreeHost(key_pinned);
+    CUDA_CHECK(cudaFree(d_key));
+    CUDA_CHECK(cudaFreeHost(key_pinned));
     return res;
 }
