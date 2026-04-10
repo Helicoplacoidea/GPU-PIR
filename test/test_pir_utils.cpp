@@ -107,7 +107,8 @@ bool verify_legacy_unused_cuda_exports_removed()
 
     const std::vector<std::string> files = {
         "mpc_cuda/mpc_core.h",
-        "mpc_cuda/fss_cuda.cu"};
+        "mpc_cuda/fss_cuda_kernels.cu",
+        "mpc_cuda/fss_cuda_api.cu"};
 
     for (const std::string &path : files)
     {
@@ -130,9 +131,32 @@ bool verify_legacy_unused_cuda_exports_removed()
     return true;
 }
 
-bool verify_cuda_source_cleanup_applied()
+bool verify_legacy_cuda_dpf_tree_removed()
 {
-    std::ifstream input("mpc_cuda/fss_cuda.cu");
+    return !std::ifstream("cudaDPF/CMakeLists.txt");
+}
+
+bool verify_cuda_sources_split()
+{
+    const std::vector<std::string> expected_files = {
+        "mpc_cuda/fss_cuda_kernels.cu",
+        "mpc_cuda/fss_cuda_api.cu",
+        "mpc_cuda/fss_cuda_launch.h"};
+
+    for (const std::string &path : expected_files)
+    {
+        if (!std::ifstream(path))
+        {
+            return false;
+        }
+    }
+
+    return !std::ifstream("mpc_cuda/fss_cuda.cu");
+}
+
+bool verify_public_api_uses_typed_contexts()
+{
+    std::ifstream input("mpc_cuda/mpc_core.h");
     if (!input)
     {
         return false;
@@ -141,22 +165,15 @@ bool verify_cuda_source_cleanup_applied()
     const std::string content((std::istreambuf_iterator<char>(input)),
                               std::istreambuf_iterator<char>());
 
-    const std::vector<std::string> forbidden_snippets = {
-        "auto block = cooperative_groups::this_thread_block();",
-        "uint128_t *d_k_res;\t\t  // save second reduction",
-        "cudaEvent_t keyReadyEvent;",
-        "cudaEventCreate(&keyReadyEvent);",
-        "const int device = 0;"};
-
-    for (const std::string &snippet : forbidden_snippets)
+    if (content.find("std::vector<void *>") != std::string::npos)
     {
-        if (content.find(snippet) != std::string::npos)
-        {
-            return false;
-        }
+        return false;
     }
 
-    return true;
+    return content.find("struct PirContext") != std::string::npos &&
+           content.find("struct PirPipelineContext") != std::string::npos &&
+           content.find("struct PirLutContext") != std::string::npos &&
+           content.find("struct PirStreamContext") != std::string::npos;
 }
 } // namespace
 
@@ -192,9 +209,21 @@ int main()
         return 1;
     }
 
-    if (!verify_cuda_source_cleanup_applied())
+    if (!verify_legacy_cuda_dpf_tree_removed())
     {
-        std::cerr << "CUDA source still contains known unused cleanup targets\n";
+        std::cerr << "Legacy cudaDPF tree is still present\n";
+        return 1;
+    }
+
+    if (!verify_cuda_sources_split())
+    {
+        std::cerr << "CUDA sources have not been split into the expected files\n";
+        return 1;
+    }
+
+    if (!verify_public_api_uses_typed_contexts())
+    {
+        std::cerr << "Public API still uses vector<void*> instead of typed contexts\n";
         return 1;
     }
 
