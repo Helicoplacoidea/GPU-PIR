@@ -1,116 +1,152 @@
-# 🚀 fss-cuda: Fast PIR with CUDA Acceleration
+# GPU-Accelerated DPF-Based Private Information Retrieval 
 
-This project implements a Private Information Retrieval (PIR) protocol using C++ and CUDA, with all dependencies encapsulated in a Docker environment. It is designed for easy deployment and GPU acceleration out of the box.
+This repository contains a CUDA implementation of DPF-based Private Information Retrieval (PIR) together with small test and benchmark drivers. The current codebase has been cleaned up to remove the historical `cudaDPF/` copy, split the main CUDA implementation into host-side and kernel-side translation units, and expose typed PIR contexts instead of raw `std::vector<void *>` handles.
 
-## 📁 Project Structure
+## Repository Layout
 
- ├── CMakeLists.txt        # Top-level CMake configuration
- ├── Dockerfile_Gen        # Dockerfile to build the CUDA development image
- ├── build/                # Build directory (generated automatically)
- ├── test/                 # Test cases
- ├── emp-ot/                 # 
- ├── emp-tool/                # 
- ├── mpc_cuda/             # CUDA kernel source code
- ├── mpc_keys/             # Cryptographic utilities
- └── README.md             # This file
-
----
-
-## 🚀 Getting Started with Docker(Recommended)
-
-### ✅ 1. Build the Docker Image (only once)
-
-Make sure the following are installed:
-
-- Docker (v20.10+ recommended)
-- NVIDIA GPU Driver + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
-
-Build the image:
-
-```bash
-docker build -f Dockerfile_Gen -t fss-cuda-image .
+```text
+.
+├── CMakeLists.txt
+├── Dockerfile
+├── emp-ot/
+├── emp-tool/
+├── mpc_cuda/
+│   ├── fss_cuda_api.cu
+│   ├── fss_cuda_kernels.cu
+│   ├── fss_cuda_launch.h
+│   ├── mpc_core.h
+│   └── pir_context.h
+├── mpc_keys/
+├── test/
+│   ├── bench_pir.cpp
+│   ├── pir_test_utils.h
+│   ├── test_pir.cpp
+│   └── test_pir_utils.cpp
+└── README.md
 ```
 
-It will be very time-consuming to obtain the CUDA image for the first time
+## Build with Docker
 
-### ✅ 2. Run the program on docker
+### Build the image
 
-Enter the image:
+Requirements:
 
-```bash
-docker run --rm -it --gpus all fss-cuda-image
-```
+- Docker
+- NVIDIA driver
+- NVIDIA Container Toolkit
 
-Run the test/bench program
-
-```bash
-./build/bin/test_pir
-```
+From the repository root:
 
 ```bash
-./build/bin/bench_pir
+docker build -t fss-cuda .
 ```
 
-You can also mount your code directory if you want to persist changes:
+### Run the container
 
 ```bash
-docker run --rm -it --gpus all -v $(pwd):/workspace fss-cuda-image
+docker run --rm -it --gpus all fss-cuda
 ```
 
-## 🛠️ Manual Setup Without Docker
-
-If you prefer not to use Docker, follow the steps below to set up your environment manually:
-
-### 1. System Requirements
-
-- **Ubuntu 20.04 / 22.04**
-- **CUDA Toolkit 11.8+**
-- **NVIDIA GPU + Driver**
-- **CMake ≥ 3.22**
-- **GCC/G++ ≥ 9**
-- **Git**
-
-### 2. Install Dependencies
+If you want to mount the local checkout:
 
 ```bash
-sudo apt update && apt install -y \
-    build-essential git cmake wget curl \
-    libssl-dev libgmp-dev libmpfr-dev libeigen3-dev \
-    python3-pip pkg-config
+docker run --rm -it --gpus all -v "$(pwd)":/workspace fss-cuda
 ```
 
-### 3. Clone and Build Required **Libraries**
+Inside the container, the project is already built under `/workspace/build`.
 
-Build emp-ot/emp-tool:
+Useful commands:
 
 ```bash
-mkdir /emp-tool/build && cd /emp-tool/build && \
-    cmake .. && make -j$(nproc) && make install
-mkdir /emp-ot/build && cd /emp-ot/build && \
-    cmake .. && make -j$(nproc) && make install
+./build/bin/test_pir_utils
+./build/bin/test_pir 24 512
+./build/bin/bench_pir 22 512
 ```
 
-Build fss-cuda:
+## Manual Build
+
+### Requirements
+
+- Ubuntu 22.04 or a similar recent Linux distribution
+- CUDA Toolkit 12.x
+- CMake 3.22+
+- GCC/G++ 9+
+- A GPU supported by your local CUDA installation
+
+### Install system packages
 
 ```bash
-mkdir -p build
-cd build
-cmake ..
-make -j$(nproc)
+sudo apt update
+sudo apt install -y \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    git \
+    libeigen3-dev \
+    libgmp-dev \
+    libmpfr-dev \
+    libssl-dev \
+    pkg-config \
+    python3-pip \
+    wget
 ```
 
-Run the test/bench program:
+### Build bundled dependencies
 
 ```bash
-./bin/test_pir
+cmake -S emp-tool -B emp-tool/build
+cmake --build emp-tool/build -j"$(nproc)"
+sudo cmake --install emp-tool/build
+
+cmake -S emp-ot -B emp-ot/build
+cmake --build emp-ot/build -j"$(nproc)"
+sudo cmake --install emp-ot/build
 ```
+
+If the installed EMP packages are not found automatically, export:
 
 ```bash
-./bin/bench_pir
+export CMAKE_PREFIX_PATH="/usr/local/lib/cmake/emp-tool:/usr/local/lib/cmake/emp-ot:${CMAKE_PREFIX_PATH}"
 ```
 
-## 📌 Notes
+### Build this project
 
-- Make sure the `CUDA_ARCH` matches your GPU (e.g., `sm_89` for RTX 4090).
-- You can configure parameters like `entry_size`, `NUM_CHUNKS`, etc., in CMake or `target_compile_definitions`.
+```bash
+cmake -S . -B build
+cmake --build build -j"$(nproc)"
+```
 
+## Running Tests and Benchmarks
+
+Three binaries are built under `build/bin`:
+
+- `test_pir_utils`: source-level and helper regression checks, does not require a visible CUDA device
+- `test_pir [n] [batch_size]`: functional PIR driver
+- `bench_pir [n] [batch_size]`: benchmark driver
+
+Examples:
+
+```bash
+./build/bin/test_pir_utils
+./build/bin/test_pir 24 512
+./build/bin/bench_pir 22 512
+```
+
+If no CUDA-capable device is visible at runtime, `test_pir` and `bench_pir` print `SKIP` and exit cleanly.
+
+## Current Build Configuration
+
+- CUDA architecture is currently fixed to `89` in `CMakeLists.txt`. Change `CMAKE_CUDA_ARCHITECTURES` if you are targeting a different GPU generation.
+- Test targets compile with:
+  - `entry_size=16`
+  - `NUM_STREAMS=10`
+  - `NUM_CHUNKS=32768`
+- `test_pir` defaults to `n=24`, `batch_size=512`
+- `bench_pir` defaults to `n=22`, `batch_size=512`
+
+## Notes
+
+- The host-side CUDA runtime calls in `mpc_cuda/fss_cuda_api.cu` are wrapped in unified error-check macros.
+- The main CUDA implementation is now split so host orchestration and kernel/device code are easier to read and maintain.
+- The public API in `mpc_cuda/mpc_core.h` now uses named context structs instead of raw pointer vectors.
