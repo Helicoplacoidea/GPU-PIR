@@ -107,9 +107,15 @@ cmake -S . -B build -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
 
 ### GPU architecture
 
-By default, the build uses `CMAKE_CUDA_ARCHITECTURES=native`, which auto-detects the GPU(s) present at configure time and compiles for those architectures.
+By default, the build automatically detects the GPU architecture via `nvidia-smi` at configure time and sets `CMAKE_CUDA_ARCHITECTURES` accordingly. You will see a log line like:
 
-To override (e.g., when building in an environment without a visible GPU, or cross-compiling for a different architecture), pass the value explicitly:
+```
+-- Auto-detected GPU architecture: sm_90
+```
+
+If `nvidia-smi` is not available or returns no GPU info, the build falls back to CMake's built-in `native` detection.
+
+To override the auto-detected value (e.g., when cross-compiling for a different GPU), pass it explicitly:
 
 ```bash
 cmake -S . -B build -DCMAKE_CUDA_ARCHITECTURES=90
@@ -156,7 +162,13 @@ docker run --rm -it --gpus all -v "$(pwd)":/workspace gpu-pir-artifact
 
 Inside the container, the project is already built under `/workspace/build`.
 
-> **Note:** When using Docker, the GPU is not visible during `docker build`, so `CMAKE_CUDA_ARCHITECTURES=native` will fail. The Dockerfile currently builds with the default architecture; if you need to target a specific GPU, add `-DCMAKE_CUDA_ARCHITECTURES=XX` to the `cmake` line in the Dockerfile.
+> **Note:** When using Docker, the GPU is not visible during `docker build`, so the `nvidia-smi` auto-detection will fail. The Dockerfile uses `ARG CUDA_ARCH=89` (Ada Lovelace) as a default. Override it to match your target GPU:
+>
+> ```bash
+> docker build --build-arg CUDA_ARCH=90 -t gpu-pir-artifact .
+> ```
+>
+> Common values: `80` (A100), `86` (RTX 3090, A40), `89` (RTX 4090, L4, L40), `90` (H100, H20).
 
 ### Option 2: Manual build
 
@@ -274,7 +286,7 @@ Current runtime constraints enforced by the drivers:
 
 ### Build-time configuration
 
-- **GPU architecture** — controlled by `CMAKE_CUDA_ARCHITECTURES` (see [GPU architecture](#gpu-architecture)). Defaults to `native` (auto-detect).
+- **GPU architecture** — controlled by `CMAKE_CUDA_ARCHITECTURES` (see [GPU architecture](#gpu-architecture)). Defaults to auto-detection via `nvidia-smi`.
 - **Compile-time constants** — defined in `test/CMakeLists.txt`:
   - `entry_size=16`
   - `NUM_STREAMS=10`
