@@ -1,5 +1,8 @@
 FROM nvidia/cuda:12.4.0-devel-ubuntu22.04
 
+# GPU architecture to compile for. Override with: docker build --build-arg CUDA_ARCH=90 ...
+ARG CUDA_ARCH=89
+
 ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /workspace
@@ -34,7 +37,7 @@ ENV CMAKE_PREFIX_PATH="/usr/local/lib/cmake/emp-tool:/usr/local/lib/cmake/emp-ot
 COPY . /workspace
 
 RUN rm -rf /workspace/build && \
-    cmake -S /workspace -B /workspace/build && \
+    cmake -S /workspace -B /workspace/build -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH} && \
     cmake --build /workspace/build -j"$(nproc)"
 
 CMD ["/bin/bash"]

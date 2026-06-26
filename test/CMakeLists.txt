@@ -1,5 +1,5 @@
 function(configure_pir_target _name _enable_lineinfo)
-    target_link_libraries(${_name} ${EMP-OT_LIBRARIES})
+    target_link_libraries(${_name} emp-ot::emp-ot emp-tool::emp-tool)
     target_include_directories(${_name} PRIVATE
         ${PROJECT_SOURCE_DIR}/mpc_keys
         /usr/local/cuda/include
