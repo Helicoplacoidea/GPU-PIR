@@ -10,69 +10,91 @@
 
 namespace
 {
-[[noreturn]] void fail_cuda_call(cudaError_t error, const char *expr, const char *file, int line)
-{
-    std::fprintf(stderr, "CUDA error at %s:%d for %s: %s\n", file, line, expr, cudaGetErrorString(error));
-    std::abort();
-}
-
-void check_last_kernel(const char *expr, const char *file, int line)
-{
-    const cudaError_t error = cudaGetLastError();
-    if (error != cudaSuccess)
+    [[noreturn]] void fail_cuda_call(cudaError_t error, const char *expr, const char *file, int line)
     {
-        fail_cuda_call(error, expr, file, line);
+        std::fprintf(stderr, "CUDA error at %s:%d for %s: %s\n", file, line, expr, cudaGetErrorString(error));
+        std::abort();
     }
-}
 
-#define CUDA_CHECK(expr)                                                                 \
-    do                                                                                   \
-    {                                                                                    \
-        const cudaError_t cuda_check_error__ = (expr);                                   \
-        if (cuda_check_error__ != cudaSuccess)                                           \
-        {                                                                                \
-            fail_cuda_call(cuda_check_error__, #expr, __FILE__, __LINE__);               \
-        }                                                                                \
+    void check_last_kernel(const char *expr, const char *file, int line)
+    {
+        const cudaError_t error = cudaGetLastError();
+        if (error != cudaSuccess)
+        {
+            fail_cuda_call(error, expr, file, line);
+        }
+    }
+
+#define CUDA_CHECK(expr)                                                   \
+    do                                                                     \
+    {                                                                      \
+        const cudaError_t cuda_check_error__ = (expr);                     \
+        if (cuda_check_error__ != cudaSuccess)                             \
+        {                                                                  \
+            fail_cuda_call(cuda_check_error__, #expr, __FILE__, __LINE__); \
+        }                                                                  \
     } while (0)
 
-#define CUDA_KERNEL_CHECK(...)                                                           \
-    do                                                                                   \
-    {                                                                                    \
-        __VA_ARGS__;                                                                     \
-        check_last_kernel(#__VA_ARGS__, __FILE__, __LINE__);                             \
+#define CUDA_KERNEL_CHECK(...)                               \
+    do                                                       \
+    {                                                        \
+        __VA_ARGS__;                                         \
+        check_last_kernel(#__VA_ARGS__, __FILE__, __LINE__); \
     } while (0)
 
-size_t key_record_size(int maxlayer)
-{
-    return static_cast<size_t>(1 + 16 + 1 + 18 * maxlayer + 16);
-}
-
-size_t key_buffer_size(int batch_size, int maxlayer)
-{
-    return static_cast<size_t>(batch_size) * key_record_size(maxlayer);
-}
-
-void print_allocated_cuda_memory(size_t total_cuda_malloc)
-{
-    std::cout << "CUDA memory initialized successfully!" << std::endl;
-    std::cout << "Total allocated CUDA memory (excluding database): "
-              << total_cuda_malloc / (1024.0 * 1024.0) << " MB" << std::endl;
-}
-
-void free_device_ptr(void *&ptr)
-{
-    if (ptr != nullptr)
+    size_t key_record_size(int maxlayer)
     {
-        CUDA_CHECK(cudaFree(ptr));
-        ptr = nullptr;
+        return static_cast<size_t>(1 + 16 + 1 + 18 * maxlayer + 16);
     }
-}
 
-template <typename T>
-T *device_ptr(void *ptr)
-{
-    return static_cast<T *>(ptr);
-}
+    size_t key_buffer_size(int batch_size, int maxlayer)
+    {
+        return static_cast<size_t>(batch_size) * key_record_size(maxlayer);
+    }
+
+    void print_allocated_cuda_memory(size_t total_cuda_malloc)
+    {
+        std::cout << "CUDA memory initialized successfully!" << std::endl;
+        std::cout << "Total allocated CUDA memory (excluding database): "
+                  << total_cuda_malloc / (1024.0 * 1024.0) << " MB" << std::endl;
+    }
+
+    void free_device_ptr(void *&ptr)
+    {
+        if (ptr != nullptr)
+        {
+            CUDA_CHECK(cudaFree(ptr));
+            ptr = nullptr;
+        }
+    }
+
+    template <typename T>
+    T *device_ptr(void *ptr)
+    {
+        return static_cast<T *>(ptr);
+    }
+
+    constexpr int kPipelineReductionBlocks = 256;
+    constexpr int kGraphFixedN = 512;
+    constexpr int kGraphFixedDepth = 20;
+    constexpr int kGraphSplitDepth = 9;
+
+    struct PirPipelineGraphN20N512State
+    {
+        bool initialized = false;
+        uint8_t *key_pinned = nullptr;
+        uint8_t *d_key = nullptr;
+        uint128_t *res_pinned = nullptr;
+        cudaStream_t stream = nullptr;
+        cudaGraph_t graph = nullptr;
+        cudaGraphExec_t graph_exec = nullptr;
+    };
+
+    PirPipelineGraphN20N512State &graph_state()
+    {
+        static PirPipelineGraphN20N512State state;
+        return state;
+    }
 } // namespace
 
 extern "C" void cudaDPFkeygen(uint8_t *k0, uint8_t *k1, uint64_t *alpha, int n, int maxlayer, int batch_size)
@@ -178,7 +200,6 @@ extern "C++" PirPipelineContext init_pir_pipeline(int N, int n, uint128_t *db)
 {
     PirPipelineContext ctx{};
     const size_t maxlayer = n - 7;
-    const int chunk_size = 1 << (n - 8);
     const size_t db_size = (size_t(1) << n) * entry_size * sizeof(uint128_t);
 
     size_t total_cuda_malloc = 0;
@@ -190,7 +211,7 @@ extern "C++" PirPipelineContext init_pir_pipeline(int N, int n, uint128_t *db)
 
     uint128_t *d_input;
     uint128_t *d_output;
-    const size_t size_input = entry_size * chunk_size * sizeof(uint128_t);
+    const size_t size_input = entry_size * kPipelineReductionBlocks * sizeof(uint128_t);
     const size_t size_output = entry_size * sizeof(uint128_t);
 
     CUDA_CHECK(cudaMalloc(&d_input, size_input));
@@ -562,7 +583,7 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
         {
             CUDA_CHECK(cudaStreamWaitEvent(streams[3], events[chunk - 1][4], 0));
         }
-        if (maxlayer <= 10)
+        if (maxlayer <= 9)
         {
             CUDA_CHECK(cudaStreamWaitEvent(streams[3], events[chunk][1], 0));
         }
@@ -581,11 +602,11 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
         }
         CUDA_CHECK(cudaStreamWaitEvent(streams[4], events[chunk][3], 0));
 
-        CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<256, threads_per_block / 2, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_input, 1, 1));
+        CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<kPipelineReductionBlocks, threads_per_block / 2, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_input, 1, 1));
         CUDA_CHECK(cudaEventRecord(events[chunk][4], streams[4]));
 
         CUDA_CHECK(cudaStreamWaitEvent(streams[5], events[chunk][4], 0));
-        CUDA_KERNEL_CHECK(BlockReduction<<<1, 256, 0, streams[5]>>>(d_input, d_output));
+        CUDA_KERNEL_CHECK(BlockReduction<<<1, kPipelineReductionBlocks, 0, streams[5]>>>(d_input, d_output));
         CUDA_CHECK(cudaEventRecord(events[chunk][5], streams[5]));
         CUDA_CHECK(cudaMemcpyAsync(res + entry_size * chunk, d_output, entry_size * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[5]));
     }
@@ -600,6 +621,116 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
     CUDA_CHECK(cudaFree(d_key));
     CUDA_CHECK(cudaFreeHost(key_pinned));
     return res;
+}
+
+extern "C++" uint128_t *test_dpf_pir_pipeline_graph_n20_N512(uint8_t *key, const PirPipelineContext &ctx, const PirStreamContext &handles)
+{
+    const int n = key[0];
+    if (n != kGraphFixedDepth)
+    {
+        std::fprintf(stderr, "test_dpf_pir_pipeline_graph_n20_N512 expects n=20, got n=%d\n", n);
+        std::abort();
+    }
+    const int maxlayer = n - 7;
+    if (maxlayer <= kGraphSplitDepth)
+    {
+        std::fprintf(stderr, "test_dpf_pir_pipeline_graph_n20_N512 expects maxlayer>9, got maxlayer=%d\n", maxlayer);
+        std::abort();
+    }
+
+    PirPipelineGraphN20N512State &state = graph_state();
+    const size_t record_size = key_record_size(maxlayer);
+    const size_t key_size = key_buffer_size(kGraphFixedN, maxlayer);
+    cudaStream_t *streams = static_cast<cudaStream_t *>(handles.streams);
+    cudaEvent_t(*events)[NUM_STREAMS] = static_cast<cudaEvent_t(*)[NUM_STREAMS]>(handles.events);
+    if (streams == nullptr || events == nullptr)
+    {
+        std::fprintf(stderr, "test_dpf_pir_pipeline_graph_n20_N512 expects initialized streams/events handles\n");
+        std::abort();
+    }
+
+    if (!state.initialized)
+    {
+        uint128_t *d_db = device_ptr<uint128_t>(ctx.db);
+        uint128_t *d_input = device_ptr<uint128_t>(ctx.input);
+        uint128_t *d_output = device_ptr<uint128_t>(ctx.output);
+        uint128_t *d_s = device_ptr<uint128_t>(ctx.seed);
+        uint32_t *d_t = device_ptr<uint32_t>(ctx.bit);
+        uint128_t *d_s_intermediate = device_ptr<uint128_t>(ctx.seed_intermediate);
+        uint32_t *d_t_intermediate = device_ptr<uint32_t>(ctx.bit_intermediate);
+        uint128_t *d_s_res = device_ptr<uint128_t>(ctx.seed_result);
+        uint32_t *d_t_res = device_ptr<uint32_t>(ctx.bit_result);
+        uint128_t *d_se = device_ptr<uint128_t>(ctx.selection);
+        uint32_t *aes_key = device_ptr<uint32_t>(ctx.aes_key);
+
+        CUDA_CHECK(cudaMallocHost(&state.key_pinned, key_size));
+        CUDA_CHECK(cudaMalloc(&state.d_key, key_size));
+        CUDA_CHECK(cudaMallocHost(&state.res_pinned, entry_size * kGraphFixedN * sizeof(uint128_t)));
+        state.stream = streams[1];
+
+        CUDA_CHECK(cudaStreamBeginCapture(state.stream, cudaStreamCaptureModeGlobal));
+        for (int chunk = 0; chunk < kGraphFixedN; ++chunk)
+        {
+            unsigned char *d_key_offset = state.d_key + chunk * record_size;
+            const uint8_t *host_key_offset = state.key_pinned + chunk * record_size;
+
+            if (chunk > 0)
+            {
+                CUDA_CHECK(cudaStreamWaitEvent(streams[1], events[chunk - 1][2], 0));
+            }
+            CUDA_CHECK(cudaMemcpyAsync(d_s, host_key_offset + 1, 16, cudaMemcpyHostToDevice, streams[1]));
+            CUDA_CHECK(cudaMemcpyAsync(d_t, host_key_offset + 17, 1, cudaMemcpyHostToDevice, streams[1]));
+            CUDA_CHECK(cudaMemcpyAsync(d_key_offset, host_key_offset, record_size, cudaMemcpyHostToDevice, streams[1]));
+
+            CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<1, (1 << (maxlayer - kGraphSplitDepth)) / 2, 0, streams[1]>>>(
+                aes_key, maxlayer - kGraphSplitDepth, 0, d_key_offset, d_s, d_t, d_s_intermediate, d_t_intermediate));
+            CUDA_CHECK(cudaEventRecord(events[chunk][1], streams[1]));
+
+            if (chunk > 0)
+            {
+                CUDA_CHECK(cudaStreamWaitEvent(streams[2], events[chunk - 1][3], 0));
+            }
+            CUDA_CHECK(cudaStreamWaitEvent(streams[2], events[chunk][1], 0));
+            CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<1 << (maxlayer - kGraphSplitDepth), (1 << kGraphSplitDepth) / 2, 0, streams[2]>>>(
+                aes_key, kGraphSplitDepth, maxlayer - kGraphSplitDepth, d_key_offset, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res));
+            CUDA_CHECK(cudaEventRecord(events[chunk][2], streams[2]));
+
+            if (chunk > 0)
+            {
+                CUDA_CHECK(cudaStreamWaitEvent(streams[3], events[chunk - 1][4], 0));
+            }
+            CUDA_CHECK(cudaStreamWaitEvent(streams[3], events[chunk][2], 0));
+            CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<(1 << maxlayer) / 256, 256, 0, streams[3]>>>(d_key_offset, d_s_res, d_t_res, d_se));
+            CUDA_CHECK(cudaEventRecord(events[chunk][3], streams[3]));
+
+            if (chunk > 0)
+            {
+                CUDA_CHECK(cudaStreamWaitEvent(streams[4], events[chunk - 1][5], 0));
+            }
+            CUDA_CHECK(cudaStreamWaitEvent(streams[4], events[chunk][3], 0));
+            CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<256, 128, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_input, 1, 1));
+            CUDA_CHECK(cudaEventRecord(events[chunk][4], streams[4]));
+
+            CUDA_CHECK(cudaStreamWaitEvent(streams[5], events[chunk][4], 0));
+            CUDA_KERNEL_CHECK(BlockReduction<<<1, 256, 0, streams[5]>>>(d_input, d_output));
+            CUDA_CHECK(cudaMemcpyAsync(state.res_pinned + entry_size * chunk, d_output, entry_size * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[5]));
+            CUDA_CHECK(cudaEventRecord(events[chunk][5], streams[5]));
+        }
+        CUDA_CHECK(cudaStreamWaitEvent(state.stream, events[kGraphFixedN - 1][5], 0));
+        CUDA_CHECK(cudaStreamEndCapture(state.stream, &state.graph));
+        CUDA_CHECK(cudaGraphInstantiate(&state.graph_exec, state.graph, nullptr, nullptr, 0));
+        state.initialized = true;
+    }
+    else if (state.stream != streams[1])
+    {
+        std::fprintf(stderr, "test_dpf_pir_pipeline_graph_n20_N512 requires stable stream handles across launches\n");
+        std::abort();
+    }
+
+    std::memcpy(state.key_pinned, key, key_size);
+    CUDA_CHECK(cudaGraphLaunch(state.graph_exec, state.stream));
+    CUDA_CHECK(cudaStreamSynchronize(state.stream));
+    return state.res_pinned;
 }
 
 extern "C++" uint32_t *test_dpf_pir_LUT(uint8_t *key, const PirLutContext &ctx, int N)
