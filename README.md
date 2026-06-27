@@ -225,7 +225,7 @@ The build produces three binaries under `build/bin`.
 ### 1. Utility regression checks
 
 ```bash
-./build/bin/test_pir_utils
+./build/test/test_pir_utils
 ```
 
 This binary checks helper logic and some source-level repository invariants. It does not require a visible CUDA device.
@@ -233,15 +233,15 @@ This binary checks helper logic and some source-level repository invariants. It 
 ### 2. Functional PIR driver
 
 ```bash
-./build/bin/test_pir [n] [batch_size]
+./build/test/test_pir [n] [batch_size]
 ```
 
 Examples:
 
 ```bash
-./build/bin/test_pir
-./build/bin/test_pir 24 512
-./build/bin/test_pir 20 128
+./build/test/test_pir
+./build/test/test_pir 24 512
+./build/test/test_pir 20 128
 ```
 
 Default values:
@@ -252,15 +252,15 @@ Default values:
 ### 3. Benchmark driver
 
 ```bash
-./build/bin/bench_pir [n] [batch_size]
+./build/test/bench_pir [n] [batch_size]
 ```
 
 Examples:
 
 ```bash
-./build/bin/bench_pir
-./build/bin/bench_pir 22 512
-./build/bin/bench_pir 20 128
+./build/test/bench_pir
+./build/test/bench_pir 22 512
+./build/test/bench_pir 20 128
 ```
 
 Default values:
