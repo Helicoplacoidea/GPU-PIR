@@ -34,10 +34,13 @@ The source tree is organized as follows.
 │   └── uint128_type.h
 ├── test/
 │   ├── CMakeLists.txt
+│   ├── bench_lut_only.cpp
 │   ├── bench_pir.cpp
 │   ├── pir_test_utils.h
 │   ├── test_pir.cpp
 │   └── test_pir_utils.cpp
+├── run_bench_pir.sh
+├── run_bench_lut.sh
 └── README.md
 ```
 
@@ -57,7 +60,7 @@ The current repository has been exercised in the following environment:
 - Ubuntu 22.04
 - CUDA 12.4.0
 - NVIDIA CUDA Docker base image: `nvidia/cuda:12.4.0-devel-ubuntu22.04`
-- CMake 3.22.1 or newer
+- CMake 3.25 or newer
 - GCC/G++ 11 or newer
 
 ### Required dependencies
@@ -220,7 +223,7 @@ Inside the container, the project is already built under `/workspace/build`.
 
 ## How to Run the Artifact
 
-The build produces three binaries under `build/test`.
+The build produces four binaries under `build/test` (`test_pir`, `test_pir_utils`, `bench_pir`, and `bench_lut_only`). The three drivers below cover functional checks, the PIR functional path, and the all-in-one benchmark; the LUT-only benchmark (`bench_lut_only`) is described together with the reproduction scripts in [Reproducing paper results](#reproducing-paper-results).
 
 ### 1. Utility regression checks
 
@@ -267,6 +270,55 @@ Default values:
 
 - `n = 22`
 - `batch_size = 512`
+
+## Reproducing paper results
+
+Two helper scripts in the repository root drive the benchmarks for reproducing and verifying the paper's experimental results. Each writes structured data plus figures into its own output directory. Both require a completed build (see [Build Instructions](#build-instructions)) and a visible CUDA device, and they need Python 3 with `matplotlib`, `pandas`, and `numpy` for the figure-generation step.
+
+| Script | Reproduces | Configuration | Output directory |
+|--------|-----------|---------------|------------------|
+| `run_bench_pir.sh` | **Table 2** — throughput and CUDA memory of the pipeline vs. non-pipeline PIR implementations | `n = 19..24`, `batch_size = 512` | `bench_results_pir/` |
+| `run_bench_lut.sh` | **Figure 11** — DPF-PIR LUT throughput as a function of `batch_size` | `n ∈ {16, 18, 20, 24}`, `batch_size ∈ {1, 10, 100, 1000, 10000}` | `bench_results_lut/` |
+
+Usage (defaults reproduce the paper directly):
+
+```bash
+# Table 2 — pipeline vs non-pipeline throughput & memory (n=19..24, batch=512)
+./run_bench_pir.sh
+
+# Figure 11 — LUT throughput vs batch_size (n=16,18,20,24)
+./run_bench_lut.sh
+```
+
+Both scripts also accept optional overrides:
+
+```bash
+./run_bench_pir.sh "19 20 21" 256     # n list + batch_size
+./run_bench_lut.sh "16 18" "10 100"   # n list + batch list
+```
+
+### `run_bench_pir.sh` (Table 2)
+
+Runs `bench_pir` for `n = 19, 20, ..., 24` at `batch_size = 512` and parses the `DPF-PIR` (non-pipeline) and `DPF-PIR pipeline` segments. The LUT segment emitted by `bench_pir` is ignored here. For each `(n, mode)` point it records throughput (PIRs/s) and allocated CUDA memory (MB), then plots the two modes against `n`. Produces:
+
+- `bench_results_pir/results.csv` — `n, mode, throughput, memory_mb`
+- `bench_results_pir/throughput_vs_n.png` and `bench_results_pir/memory_vs_n.png`
+- `bench_results_pir/run_log.txt` — raw program output per run, for verification
+
+### `run_bench_lut.sh` (Figure 11)
+
+Runs the LUT-only benchmark `bench_lut_only` for `n ∈ {16, 18, 20, 24}` across `batch_size ∈ {1, 10, 100, 1000, 10000}` and plots LUT throughput (PIRs/s, log-x axis) versus `batch_size`. LUT and regular PIR are evaluated separately, so these figures contain only the LUT series. Produces:
+
+- `bench_results_lut/results.csv` — `n, batch, time_ms, throughput`
+- `bench_results_lut/lut_n16_n18.png` — n=16 and n=18 on one figure
+- `bench_results_lut/lut_n20_n24.png` — n=20 and n=24 on one figure
+- `bench_results_lut/run_log.txt` — raw program output per run, for verification
+
+The `bench_lut_only` binary can also be run directly:
+
+```bash
+./build/test/bench_lut_only [n] [batch_size]   # default n=20, batch_size=512
+```
 
 ## Configuration Options
 
