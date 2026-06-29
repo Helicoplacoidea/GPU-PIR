@@ -220,7 +220,7 @@ Inside the container, the project is already built under `/workspace/build`.
 
 ## How to Run the Artifact
 
-The build produces three binaries under `build/bin`.
+The build produces three binaries under `build/test`.
 
 ### 1. Utility regression checks
 
