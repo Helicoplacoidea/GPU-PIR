@@ -1,308 +1,285 @@
-#pragma once
-
 #include "../mpc_cuda/mpc_core.h"
 
-#include <cstdio>
-#include <cstdlib>
-#include <cstdint>
 #include <iostream>
-#include <limits>
-#include <stdexcept>
-#include <sstream>
+#include <fstream>
 #include <string>
 #include <vector>
 
-inline uint64_t generate_random_uint64()
+#include "pir_test_utils.h"
+
+namespace
 {
-    const uint64_t high = static_cast<uint64_t>(rand());
-    const uint64_t low = static_cast<uint64_t>(rand());
-    return (high << 32) | low;
+bool verify_uint128_result_reports_mismatch()
+{
+    const std::vector<uint128_t> lhs = {uint128_t(0, 1), uint128_t(0, 2)};
+    const std::vector<uint128_t> rhs = {uint128_t(0, 0), uint128_t(0, 0)};
+    const std::vector<uint128_t> db = {uint128_t(0, 1), uint128_t(0, 3)};
+    const std::vector<uint64_t> queries = {0};
+
+    std::string error;
+    const bool ok = verify_pir_response(lhs.data(), rhs.data(), db.data(), queries.data(), 1, &error);
+    return !ok && error.find("batch 0") != std::string::npos && error.find("entry 1") != std::string::npos;
 }
 
-inline bool validate_packed_dpf_depth(int n, const char *label)
+bool verify_lut_limit_rule()
 {
-    if (n < 8)
-    {
-        std::cerr << "[FAIL] " << label << ": n should be larger than 7\n";
-        return false;
-    }
-    return true;
+    return !is_valid_lut_batch(25, 2) && is_valid_lut_batch(24, 2) && is_valid_lut_batch(25, 1);
 }
 
-inline bool is_valid_lut_batch(int n, int batch_size)
+bool verify_gpu_parser_rejects_non_numeric_output()
 {
-    return n < 25 || batch_size <= 1;
-}
-
-inline bool validate_lut_batch(int n, int batch_size, const char *label)
-{
-    if (!is_valid_lut_batch(n, batch_size))
-    {
-        std::cerr << "[FAIL] " << label << ": batch_size should be 1 when n >= 25\n";
-        return false;
-    }
-    return true;
-}
-
-inline size_t dpf_key_bytes(int n)
-{
-    return 1 + 16 + 1 + 18 * static_cast<size_t>(n - 7) + 16;
-}
-
-inline std::vector<uint128_t> make_random_pir_db(int n)
-{
-    const size_t total_entries = size_t{1} << n;
-    std::vector<uint128_t> db(total_entries * entry_size);
-    for (size_t i = 0; i < db.size(); ++i)
-    {
-        db[i] = uint128_t(generate_random_uint64(), generate_random_uint64());
-    }
-    return db;
-}
-
-inline std::vector<uint32_t> make_lut_db(int n)
-{
-    const size_t total_entries = size_t{1} << n;
-    std::vector<uint32_t> db(total_entries);
-    for (size_t i = 0; i < total_entries; ++i)
-    {
-        db[i] = static_cast<uint32_t>(i);
-    }
-    return db;
-}
-
-inline std::vector<uint64_t> make_descending_queries(int n, int batch_size)
-{
-    const uint64_t total_entries = 1ULL << n;
-    std::vector<uint64_t> queries(batch_size);
-    for (int i = 0; i < batch_size; ++i)
-    {
-        queries[i] = total_entries - static_cast<uint64_t>(i) - 1;
-    }
-    return queries;
-}
-
-inline std::vector<uint64_t> make_sequential_queries(int batch_size)
-{
-    std::vector<uint64_t> queries(batch_size);
-    for (int i = 0; i < batch_size; ++i)
-    {
-        queries[i] = static_cast<uint64_t>(i);
-    }
-    return queries;
-}
-
-inline std::vector<uint64_t> make_constant_queries(int batch_size, uint64_t value)
-{
-    return std::vector<uint64_t>(batch_size, value);
-}
-
-inline bool verify_pir_response(const uint128_t *lhs,
-                                const uint128_t *rhs,
-                                const uint128_t *db,
-                                const uint64_t *queries,
-                                int batch_size,
-                                std::string *error)
-{
-    for (int batch = 0; batch < batch_size; ++batch)
-    {
-        for (int entry = 0; entry < entry_size; ++entry)
-        {
-            const int offset = batch * entry_size + entry;
-            const uint128_t combined = lhs[offset] ^ rhs[offset];
-            const uint128_t expected = db[queries[batch] * entry_size + entry];
-            if (combined != expected)
-            {
-                if (error != nullptr)
-                {
-                    std::ostringstream oss;
-                    oss << "mismatch at batch " << batch << ", entry " << entry;
-                    *error = oss.str();
-                }
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-inline bool verify_lut_response(const uint32_t *lhs,
-                                const uint32_t *rhs,
-                                const uint32_t *db,
-                                const uint64_t *queries,
-                                int batch_size,
-                                std::string *error)
-{
-    for (int batch = 0; batch < batch_size; ++batch)
-    {
-        const uint32_t combined = lhs[batch] ^ rhs[batch];
-        const uint32_t expected = db[queries[batch]];
-        if (combined != expected)
-        {
-            if (error != nullptr)
-            {
-                std::ostringstream oss;
-                oss << "mismatch at batch " << batch;
-                *error = oss.str();
-            }
-            return false;
-        }
-    }
-    return true;
-}
-
-inline bool parse_best_gpu_from_nvidia_smi_output(const std::string &output,
-                                                  int *gpu_id,
-                                                  int *free_mem_mb)
-{
-    std::istringstream stream(output);
-    std::string line;
-    int best_gpu = -1;
-    int best_free_mem = std::numeric_limits<int>::min();
-    int idx = 0;
-
-    while (std::getline(stream, line))
-    {
-        if (line.empty())
-        {
-            continue;
-        }
-
-        std::istringstream line_stream(line);
-        int parsed_free_mem = 0;
-        if (!(line_stream >> parsed_free_mem))
-        {
-            return false;
-        }
-
-        if (parsed_free_mem > best_free_mem)
-        {
-            best_free_mem = parsed_free_mem;
-            best_gpu = idx;
-        }
-        ++idx;
-    }
-
-    if (best_gpu < 0)
-    {
-        return false;
-    }
-
-    if (gpu_id != nullptr)
-    {
-        *gpu_id = best_gpu;
-    }
-    if (free_mem_mb != nullptr)
-    {
-        *free_mem_mb = best_free_mem;
-    }
-    return true;
-}
-
-inline bool select_best_gpu()
-{
-    FILE *pipe = popen("nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits", "r");
-    if (pipe == nullptr)
-    {
-        std::cerr << "[WARN] Failed to run nvidia-smi, using the default CUDA device\n";
-        return false;
-    }
-
-    char buffer[128];
-    std::string output;
-
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr)
-    {
-        output += buffer;
-    }
-
-    pclose(pipe);
-
+    const std::string output =
+        "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver.\n";
     int gpu_id = -1;
-    int max_free_mem = -1;
-    if (!parse_best_gpu_from_nvidia_smi_output(output, &gpu_id, &max_free_mem))
-    {
-        std::cerr << "[WARN] Unable to parse nvidia-smi output, using the default CUDA device\n";
-        return false;
-    }
-
-    std::ostringstream ss;
-    ss << gpu_id;
-    setenv("CUDA_VISIBLE_DEVICES", ss.str().c_str(), 1);
-    std::cout << "[INFO] Selected GPU " << gpu_id << " (free memory: " << max_free_mem << " MB)\n";
-    return true;
+    int free_mem = -1;
+    return !parse_best_gpu_from_nvidia_smi_output(output, &gpu_id, &free_mem);
 }
 
-inline bool has_cuda_device()
+bool verify_cli_override_parser()
 {
-    int device_count = 0;
-    const cudaError_t err = cudaGetDeviceCount(&device_count);
-    if (err != cudaSuccess || device_count <= 0)
     {
-        std::cerr << "[WARN] No CUDA-capable device is available\n";
-        return false;
-    }
-    return true;
-}
-
-inline bool parse_cli_overrides(int argc,
-                                const char *const argv[],
-                                int default_n,
-                                int default_batch_size,
-                                int *n,
-                                int *batch_size,
-                                std::string *error)
-{
-    if (argc != 1 && argc != 3)
-    {
-        if (error != nullptr)
+        const char *argv[] = {"test_pir"};
+        int n = 0;
+        int batch_size = 0;
+        std::string error;
+        if (!parse_cli_overrides(1, argv, 24, 512, &n, &batch_size, &error))
         {
-            std::ostringstream oss;
-            oss << "Usage: " << argv[0] << " [n batch_size]";
-            *error = oss.str();
+            return false;
         }
-        return false;
-    }
-
-    int parsed_n = default_n;
-    int parsed_batch_size = default_batch_size;
-    if (argc == 3)
-    {
-        try
+        if (n != 24 || batch_size != 512)
         {
-            parsed_n = std::stoi(argv[1]);
-            parsed_batch_size = std::stoi(argv[2]);
-        }
-        catch (const std::exception &)
-        {
-            if (error != nullptr)
-            {
-                std::ostringstream oss;
-                oss << "Usage: " << argv[0] << " [n batch_size]";
-                *error = oss.str();
-            }
             return false;
         }
     }
 
-    if (parsed_n <= 0 || parsed_batch_size <= 0)
     {
-        if (error != nullptr)
+        const char *argv[] = {"test_pir", "20", "128"};
+        int n = 0;
+        int batch_size = 0;
+        std::string error;
+        if (!parse_cli_overrides(3, argv, 24, 512, &n, &batch_size, &error))
         {
-            std::ostringstream oss;
-            oss << "Usage: " << argv[0] << " [n batch_size]";
-            *error = oss.str();
+            return false;
         }
+        if (n != 20 || batch_size != 128)
+        {
+            return false;
+        }
+    }
+
+    {
+        const char *argv[] = {"test_pir", "abc", "128"};
+        int n = 0;
+        int batch_size = 0;
+        std::string error;
+        if (parse_cli_overrides(3, argv, 24, 512, &n, &batch_size, &error))
+        {
+            return false;
+        }
+        if (error.find("Usage") == std::string::npos)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool verify_legacy_cuda_dpf_tree_removed()
+{
+    return !std::ifstream("cudaDPF/CMakeLists.txt");
+}
+
+bool verify_cuda_sources_split()
+{
+    const std::vector<std::string> expected_files = {
+        "mpc_cuda/fss_cuda_kernels.cu",
+        "mpc_cuda/fss_cuda_api.cu",
+        "mpc_cuda/fss_cuda_launch.h"};
+
+    for (const std::string &path : expected_files)
+    {
+        if (!std::ifstream(path))
+        {
+            return false;
+        }
+    }
+
+    return !std::ifstream("mpc_cuda/fss_cuda.cu");
+}
+
+bool verify_public_api_uses_typed_contexts()
+{
+    std::ifstream input("mpc_cuda/mpc_core.h");
+    if (!input)
+    {
         return false;
     }
 
-    if (n != nullptr)
+    const std::string content((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+
+    if (content.find("std::vector<void *>") != std::string::npos)
     {
-        *n = parsed_n;
+        return false;
     }
-    if (batch_size != nullptr)
+
+    return content.find("struct PirContext") != std::string::npos &&
+           content.find("struct PirPipelineContext") != std::string::npos &&
+           content.find("struct PirLutContext") != std::string::npos &&
+           content.find("struct PirStreamContext") != std::string::npos;
+}
+
+bool verify_cuda_runtime_calls_are_checked()
+{
+    std::ifstream input("mpc_cuda/fss_cuda_api.cu");
+    if (!input)
     {
-        *batch_size = parsed_batch_size;
+        return false;
     }
+
+    const std::string content((std::istreambuf_iterator<char>(input)),
+                              std::istreambuf_iterator<char>());
+
+    if (content.find("#define CUDA_CHECK(") == std::string::npos)
+    {
+        return false;
+    }
+
+    if (content.find("#define CUDA_KERNEL_CHECK(") == std::string::npos)
+    {
+        return false;
+    }
+
+    const std::vector<std::string> forbidden_bare_calls = {
+        "\n    cudaMalloc(",
+        "\n    cudaMemcpy(",
+        "\n    cudaMemcpyAsync(",
+        "\n    cudaMallocHost(",
+        "\n    cudaFree(",
+        "\n    cudaFreeHost(",
+        "\n    cudaStreamCreate(",
+        "\n    cudaStreamDestroy(",
+        "\n    cudaEventCreate(",
+        "\n    cudaEventDestroy(",
+        "\n    cudaStreamWaitEvent(",
+        "\n    cudaEventRecord(",
+        "\n    cudaStreamSynchronize(",
+        "\n    cudaDeviceSynchronize(",
+        "\n    cudaGetDeviceProperties(",
+        "\n    cudaDeviceSetLimit(",
+        "\n    cudaStreamSetAttribute(",
+        "\n    cudaCtxResetPersistingL2Cache("};
+
+    for (const std::string &pattern : forbidden_bare_calls)
+    {
+        if (content.find(pattern) != std::string::npos)
+        {
+            return false;
+        }
+    }
+
     return true;
+}
+
+bool verify_cmake_configuration_tightened()
+{
+    std::ifstream top_input("CMakeLists.txt");
+    std::ifstream test_input("test/CMakeLists.txt");
+    if (!top_input || !test_input)
+    {
+        return false;
+    }
+
+    const std::string top_content((std::istreambuf_iterator<char>(top_input)),
+                                  std::istreambuf_iterator<char>());
+    const std::string test_content((std::istreambuf_iterator<char>(test_input)),
+                                   std::istreambuf_iterator<char>());
+
+    if (top_content.find("set(CMAKE_CUDA_ARCHITECTURES 89)") == std::string::npos)
+    {
+        return false;
+    }
+
+    const std::vector<std::string> forbidden_top_patterns = {
+        "FIND_PACKAGE(OpenSSL REQUIRED)",
+        "find_package(OpenSSL REQUIRED)",
+        "CMAKE_VERBOSE_MAKEFILE",
+        "-arch=sm_89",
+        "if(CMAKE_CUDA_COMPILER_ID STREQUAL \"NVIDIA\")\nendif()"};
+
+    for (const std::string &pattern : forbidden_top_patterns)
+    {
+        if (top_content.find(pattern) != std::string::npos)
+        {
+            return false;
+        }
+    }
+
+    if (test_content.find("set(CMAKE_CUDA_ARCHITECTURES 89)") != std::string::npos)
+    {
+        return false;
+    }
+
+    return true;
+}
+} // namespace
+
+int main()
+{
+    if (!verify_uint128_result_reports_mismatch())
+    {
+        std::cerr << "uint128 verification helper did not report mismatch correctly\n";
+        return 1;
+    }
+
+    if (!verify_lut_limit_rule())
+    {
+        std::cerr << "LUT batch validation helper returned unexpected result\n";
+        return 1;
+    }
+
+    if (!verify_gpu_parser_rejects_non_numeric_output())
+    {
+        std::cerr << "GPU parser accepted invalid nvidia-smi output\n";
+        return 1;
+    }
+
+    if (!verify_cli_override_parser())
+    {
+        std::cerr << "CLI override parser returned unexpected result\n";
+        return 1;
+    }
+
+    if (!verify_legacy_cuda_dpf_tree_removed())
+    {
+        std::cerr << "Legacy cudaDPF tree is still present\n";
+        return 1;
+    }
+
+    if (!verify_cuda_sources_split())
+    {
+        std::cerr << "CUDA sources have not been split into the expected files\n";
+        return 1;
+    }
+
+    if (!verify_public_api_uses_typed_contexts())
+    {
+        std::cerr << "Public API still uses vector<void*> instead of typed contexts\n";
+        return 1;
+    }
+
+    if (!verify_cuda_runtime_calls_are_checked())
+    {
+        std::cerr << "CUDA runtime calls are not wrapped by the unified error checks\n";
+        return 1;
+    }
+
+    if (!verify_cmake_configuration_tightened())
+    {
+        std::cerr << "CMake configuration still contains the redundant settings slated for cleanup\n";
+        return 1;
+    }
+
+    return 0;
 }
