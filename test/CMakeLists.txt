@@ -5,7 +5,6 @@ function(configure_pir_target _name _enable_lineinfo)
         /usr/local/cuda/include
     )
     target_compile_definitions(${_name} PRIVATE
-        "entry_size=16"
         "NUM_STREAMS=10"
         "NUM_CHUNKS=32768"
     )

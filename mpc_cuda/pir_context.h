@@ -1,7 +1,5 @@
 #pragma once
 
-typedef unsigned char *DCF_Keys;
-
 struct PirContext
 {
     void *db = nullptr;
@@ -17,11 +15,11 @@ struct PirContext
     void *aes_key = nullptr;
 };
 
-struct PirBatchContext
+struct pir_batch_context
 {
     void *db = nullptr;
-    void *partials = nullptr; // [blocks][batch][entry_size]
-    void *output = nullptr;   // [batch][entry_size]
+    void *partials = nullptr; // [num_blocks][batch_size][entry_size]
+    void *output = nullptr;   // [batch_size][entry_size]
     void *key = nullptr;
     void *seed = nullptr;
     void *bit = nullptr;
@@ -31,7 +29,7 @@ struct PirBatchContext
     void *bit_result = nullptr;
     void *selection = nullptr;
     void *aes_key = nullptr;
-    int blocks = 0;
+    int num_blocks = 0;
 };
 
 struct PirPipelineContext

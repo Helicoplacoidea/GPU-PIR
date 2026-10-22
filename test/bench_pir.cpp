@@ -47,6 +47,14 @@ bool benchmark_pir(int n, int batch_size)
         uint128_t *verify0 = run(k0.data());
         uint128_t *verify1 = run(k1.data());
 
+        if (verify0 == nullptr || verify1 == nullptr)
+        {
+            free(verify0);
+            free(verify1);
+            std::cerr << "[FAIL] bench_pir smoke check (" << label << "): null result\n";
+            return false;
+        }
+
         std::string error;
         const bool verified = verify_pir_response(verify0, verify1, db.data(), queries.data(), batch_size, &error);
         free(verify0);
@@ -82,7 +90,7 @@ bool benchmark_pir(int n, int batch_size)
     }
 
     {
-        PirBatchContext ctx = init_pir_batch(batch_size, n, db.data());
+        pir_batch_context ctx = init_pir_batch(batch_size, n, db.data());
         ok = benchmark_mode("DPF-PIR batch sync", [&](uint8_t *key)
                             { return test_dpf_pir_batch(key, ctx, batch_size, 0); }) && ok;
         ok = benchmark_mode("DPF-PIR batch async", [&](uint8_t *key)

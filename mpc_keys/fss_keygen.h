@@ -139,7 +139,7 @@ extern const uint128_t select_vector_table[128] = {
 	uint128_t(0x0000000000000000ULL, 0x0000000000000001ULL)	 // 127
 };
 
-void Double_PRG(AES_KEY *key, uint128_t input, uint128_t &output1, uint128_t &output2, int &bit1, int &bit2)
+void Double_PRG(emp::AES_KEY *key, uint128_t input, uint128_t &output1, uint128_t &output2, int &bit1, int &bit2)
 {
 	input = input.set_lsb_zero();
 
@@ -147,11 +147,11 @@ void Double_PRG(AES_KEY *key, uint128_t input, uint128_t &output1, uint128_t &ou
 	stash[0] = input;
 	stash[1] = input.reverse_lsb();
 
-	block stash_block[2];
-	stash_block[0] = makeBlock(stash[0].get_high(), stash[0].get_low());
-	stash_block[1] = makeBlock(stash[1].get_high(), stash[1].get_low());
+	emp::block stash_block[2];
+	stash_block[0] = emp::makeBlock(stash[0].get_high(), stash[0].get_low());
+	stash_block[1] = emp::makeBlock(stash[1].get_high(), stash[1].get_low());
 
-	AES_ecb_encrypt_blks(stash_block, 2, key);
+	emp::AES_ecb_encrypt_blks(stash_block, 2, key);
 	int64_t *v64val = (int64_t *)&stash_block[0];
 	stash[0] = uint128_t(v64val[1], v64val[0]);
 	v64val = (int64_t *)&stash_block[1];
@@ -168,7 +168,7 @@ void Double_PRG(AES_KEY *key, uint128_t input, uint128_t &output1, uint128_t &ou
 	output2 = stash[1].set_lsb_zero();
 }
 
-void GEN_Pack(AES_Generator *prg, AES_KEY *key, uint128_t alpha, int n, unsigned char **k0, unsigned char **k1)
+void GEN_Pack(AES_Generator *prg, emp::AES_KEY *key, uint128_t alpha, int n, unsigned char **k0, unsigned char **k1)
 {
 	int maxlayer = n - 7;
 	// int maxlayer = n;
@@ -280,7 +280,7 @@ void GEN_Pack(AES_Generator *prg, AES_KEY *key, uint128_t alpha, int n, unsigned
 	*k1 = buff1;
 }
 
-uint128_t EVAL_Pack(AES_KEY *key, unsigned char *k, uint128_t x)
+uint128_t EVAL_Pack(emp::AES_KEY *key, unsigned char *k, uint128_t x)
 {
 	int n = k[0];
 	int maxlayer = n - 7;
@@ -337,7 +337,7 @@ uint128_t EVAL_Pack(AES_KEY *key, unsigned char *k, uint128_t x)
 	return res;
 }
 
-void EvalFullRecursive(AES_KEY *key, unsigned char *k, uint128_t s, uint8_t t, size_t lvl, size_t stop, std::vector<uint8_t> &res)
+void EvalFullRecursive(emp::AES_KEY *key, unsigned char *k, uint128_t s, uint8_t t, size_t lvl, size_t stop, std::vector<uint8_t> &res)
 {
 	if (lvl == stop + 1)
 	{
@@ -362,7 +362,7 @@ void EvalFullRecursive(AES_KEY *key, unsigned char *k, uint128_t s, uint8_t t, s
 
 		memcpy(&sCW, &k[(lvl) * 18], 16);
 
-		//            block* sCW = (block*) key.data() + 17 + lvl*18;
+		//            emp::block* sCW = (emp::block*) key.data() + 17 + lvl*18;
 		tCW[0] = k[18 * (lvl) + 16];
 		tCW[1] = k[18 * (lvl) + 17];
 		tL ^= tCW[0];
@@ -376,7 +376,7 @@ void EvalFullRecursive(AES_KEY *key, unsigned char *k, uint128_t s, uint8_t t, s
 	EvalFullRecursive(key, k, sR, tR, lvl + 1, stop, res);
 }
 
-std::vector<uint8_t> EvalFull(AES_KEY *key, unsigned char *k, size_t logn)
+std::vector<uint8_t> EvalFull(emp::AES_KEY *key, unsigned char *k, size_t logn)
 {
 	assert(logn <= 63);
 	std::vector<uint8_t> data;
@@ -389,7 +389,7 @@ std::vector<uint8_t> EvalFull(AES_KEY *key, unsigned char *k, size_t logn)
 	return data;
 }
 
-void fss_gen(AES_Generator *prg, AES_KEY *key, uint128_t alpha, int n, unsigned char **k0, unsigned char **k1)
+void fss_gen(AES_Generator *prg, emp::AES_KEY *key, uint128_t alpha, int n, unsigned char **k0, unsigned char **k1)
 {
 	// int maxlayer = n - 7;
 	int maxlayer = n;
@@ -495,7 +495,7 @@ void fss_gen(AES_Generator *prg, AES_KEY *key, uint128_t alpha, int n, unsigned 
 	*k1 = buff1;
 }
 
-uint128_t dcf_eval(AES_KEY *key, unsigned char *k, uint128_t x)
+uint128_t dcf_eval(emp::AES_KEY *key, unsigned char *k, uint128_t x)
 {
 	int n = k[0];
 	int maxlayer = n;

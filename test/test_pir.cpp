@@ -64,7 +64,7 @@ namespace
         std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
         cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-        PirBatchContext ctx = init_pir_batch(batch_size, n, db.data());
+        pir_batch_context ctx = init_pir_batch(batch_size, n, db.data());
 
         bool ok = true;
         for (int mode = 0; mode < 2; ++mode)
@@ -73,7 +73,10 @@ namespace
             uint128_t *res1 = test_dpf_pir_batch(k1.data(), ctx, batch_size, mode);
 
             std::string error;
-            const bool verified = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
+            if (res0 == nullptr || res1 == nullptr)
+                error = "null result";
+            const bool verified = (res0 != nullptr && res1 != nullptr) &&
+                                  verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
 
             free(res0);
             free(res1);

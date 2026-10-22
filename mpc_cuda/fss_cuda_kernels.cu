@@ -3,13 +3,12 @@
 #include <string.h>
 #include "aes_cuda.h"
 #include "../mpc_keys/uint128_type.h"
+#include "pir_config.h"
+#include "dcf_keys.h"
 #include "aes_prg_device.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/memcpy_async.h>
 
-// #define entry_size 2
-
-typedef unsigned char *DCF_Keys;
 
 __device__ const uint64_t select_vector_table[256] = {
 	0x8000000000000000ULL, 0x0000000000000000UL, // 0
