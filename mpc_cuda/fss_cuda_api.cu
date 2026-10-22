@@ -145,35 +145,69 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
     total_cuda_malloc += blocksum_size;
     ctx.blocksum = blocksum_cuda;
 
-    int device_id = 0;
-    CUDA_CHECK(cudaGetDevice(&device_id));
-    cudaDeviceProp device_prop{};
-    CUDA_CHECK(cudaGetDeviceProperties(&device_prop, device_id));
-    const int batch_blocks = device_prop.multiProcessorCount > 0 ? device_prop.multiProcessorCount : 1;
-    ctx.batch_blocks = batch_blocks;
+    uint8_t *d_key;
+    const size_t key_size = key_buffer_size(N, static_cast<int>(maxlayer));
+    CUDA_CHECK(cudaMalloc(&d_key, key_size));
+    total_cuda_malloc += key_size;
+    ctx.key = d_key;
 
-    const size_t batch_partial_size = (size_t)batch_blocks * N * entry_size * sizeof(uint128_t);
-    const size_t batch_output_size = (size_t)N * entry_size * sizeof(uint128_t);
-    uint128_t *d_batch_partials;
-    uint128_t *d_batch_output;
-    CUDA_CHECK(cudaMalloc(&d_batch_partials, batch_partial_size));
-    CUDA_CHECK(cudaMemset(d_batch_partials, 0, batch_partial_size));
-    CUDA_CHECK(cudaMalloc(&d_batch_output, batch_output_size));
-    ctx.batch_partials = d_batch_partials;
-    ctx.batch_output = d_batch_output;
-    total_cuda_malloc += batch_partial_size + batch_output_size;
+    uint128_t *d_s;
+    uint128_t *d_s_intermediate;
+    uint128_t *d_s_res;
+    uint128_t *d_se;
+    uint32_t *d_t;
+    uint32_t *d_t_intermediate;
+    uint32_t *d_t_res;
 
-    const size_t batch_smem_async = 2 * 128 * entry_size * sizeof(uint128_t);
-    if (batch_smem_async > device_prop.sharedMemPerBlockOptin)
-    {
-        std::fprintf(stderr,
-                     "BatchMulRedAsync needs %zu bytes of shared memory but device limit is %zu\n",
-                     batch_smem_async, device_prop.sharedMemPerBlockOptin);
-        std::abort();
-    }
-    CUDA_CHECK(cudaFuncSetAttribute(BatchMulRedAsync,
-                                    cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                    static_cast<int>(batch_smem_async)));
+    const size_t size_d_s = N * sizeof(uint128_t);
+    const size_t size_d_t = N * sizeof(uint32_t);
+    const size_t size_d_s_intermediate = N * (size_t(1) << 10) * sizeof(uint128_t);
+    const size_t size_d_t_intermediate = N * (size_t(1) << 10) * sizeof(uint32_t);
+    const size_t size_d_s_res = N * (size_t(1) << maxlayer) * sizeof(uint128_t);
+    const size_t size_d_t_res = N * (size_t(1) << maxlayer) * sizeof(uint32_t);
+    const size_t size_d_se = N * (size_t(1) << maxlayer) * sizeof(uint128_t);
+
+    CUDA_CHECK(cudaMalloc(&d_s, size_d_s));
+    CUDA_CHECK(cudaMalloc(&d_t, size_d_t));
+    CUDA_CHECK(cudaMalloc(&d_s_intermediate, size_d_s_intermediate));
+    CUDA_CHECK(cudaMalloc(&d_t_intermediate, size_d_t_intermediate));
+    CUDA_CHECK(cudaMalloc(&d_s_res, size_d_s_res));
+    CUDA_CHECK(cudaMalloc(&d_t_res, size_d_t_res));
+    CUDA_CHECK(cudaMalloc(&d_se, size_d_se));
+
+    total_cuda_malloc += size_d_s + size_d_t + size_d_s_intermediate + size_d_t_intermediate + size_d_s_res + size_d_t_res + size_d_se;
+
+    ctx.seed = d_s;
+    ctx.bit = d_t;
+    ctx.seed_intermediate = d_s_intermediate;
+    ctx.bit_intermediate = d_t_intermediate;
+    ctx.seed_result = d_s_res;
+    ctx.bit_result = d_t_res;
+    ctx.selection = d_se;
+
+    uint32_t *aes_key;
+    const size_t aes_key_size = 4 * (14 + 1) * sizeof(uint32_t);
+    CUDA_CHECK(cudaMalloc(&aes_key, aes_key_size));
+    total_cuda_malloc += aes_key_size;
+    CUDA_KERNEL_CHECK(fss_genaeskey_kernel<<<1, 1>>>(aes_key));
+    ctx.aes_key = aes_key;
+
+    print_allocated_cuda_memory(total_cuda_malloc);
+    return ctx;
+}
+
+extern "C++" PirBatchContext init_pir_batch(int N, int n, uint128_t *db)
+{
+    PirBatchContext ctx{};
+    const size_t maxlayer = n - 7;
+    const size_t db_size = (size_t(1) << n) * entry_size * sizeof(uint128_t);
+
+    size_t total_cuda_malloc = 0;
+
+    uint128_t *d_db;
+    CUDA_CHECK(cudaMalloc(&d_db, db_size));
+    CUDA_CHECK(cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice));
+    ctx.db = d_db;
 
     uint8_t *d_key;
     const size_t key_size = key_buffer_size(N, static_cast<int>(maxlayer));
@@ -214,6 +248,36 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
     ctx.seed_result = d_s_res;
     ctx.bit_result = d_t_res;
     ctx.selection = d_se;
+
+    int device_id = 0;
+    CUDA_CHECK(cudaGetDevice(&device_id));
+    cudaDeviceProp device_prop{};
+    CUDA_CHECK(cudaGetDeviceProperties(&device_prop, device_id));
+    const int blocks = device_prop.multiProcessorCount > 0 ? device_prop.multiProcessorCount : 1;
+    ctx.blocks = blocks;
+
+    uint128_t *d_partials;
+    uint128_t *d_output;
+    const size_t partial_size = (size_t)blocks * N * entry_size * sizeof(uint128_t);
+    const size_t output_size = (size_t)N * entry_size * sizeof(uint128_t);
+    CUDA_CHECK(cudaMalloc(&d_partials, partial_size));
+    CUDA_CHECK(cudaMemset(d_partials, 0, partial_size));
+    CUDA_CHECK(cudaMalloc(&d_output, output_size));
+    ctx.partials = d_partials;
+    ctx.output = d_output;
+    total_cuda_malloc += partial_size + output_size;
+
+    const size_t batch_smem_async = 2 * 128 * entry_size * sizeof(uint128_t);
+    if (batch_smem_async > device_prop.sharedMemPerBlockOptin)
+    {
+        std::fprintf(stderr,
+                     "BatchMulRedAsync needs %zu bytes of shared memory but device limit is %zu\n",
+                     batch_smem_async, device_prop.sharedMemPerBlockOptin);
+        std::abort();
+    }
+    CUDA_CHECK(cudaFuncSetAttribute(BatchMulRedAsync,
+                                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                    static_cast<int>(batch_smem_async)));
 
     uint32_t *aes_key;
     const size_t aes_key_size = 4 * (14 + 1) * sizeof(uint32_t);
@@ -354,8 +418,23 @@ void free_cuda_memory(PirContext &ctx)
 {
     free_device_ptr(ctx.db);
     free_device_ptr(ctx.blocksum);
-    free_device_ptr(ctx.batch_partials);
-    free_device_ptr(ctx.batch_output);
+    free_device_ptr(ctx.key);
+    free_device_ptr(ctx.seed);
+    free_device_ptr(ctx.bit);
+    free_device_ptr(ctx.seed_intermediate);
+    free_device_ptr(ctx.bit_intermediate);
+    free_device_ptr(ctx.seed_result);
+    free_device_ptr(ctx.bit_result);
+    free_device_ptr(ctx.selection);
+    free_device_ptr(ctx.aes_key);
+    std::cout << "CUDA memory freed successfully!" << std::endl;
+}
+
+void free_cuda_memory(PirBatchContext &ctx)
+{
+    free_device_ptr(ctx.db);
+    free_device_ptr(ctx.partials);
+    free_device_ptr(ctx.output);
     free_device_ptr(ctx.key);
     free_device_ptr(ctx.seed);
     free_device_ptr(ctx.bit);
@@ -459,7 +538,7 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
     return res;
 }
 
-extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const PirContext &ctx, int N, int mode)
+extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const PirBatchContext &ctx, int N, int mode)
 {
     const int n = key[0];
     const int maxlayer = n - 7;
@@ -475,9 +554,9 @@ extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const PirContext &ctx, 
         std::fprintf(stderr, "test_dpf_pir_batch mode must be 0 (sync) or 1 (async)\n");
         std::abort();
     }
-    if (ctx.batch_partials == nullptr || ctx.batch_output == nullptr || ctx.batch_blocks <= 0)
+    if (ctx.partials == nullptr || ctx.output == nullptr || ctx.blocks <= 0)
     {
-        std::fprintf(stderr, "PirContext was not initialized for batch-tiled PIR\n");
+        std::fprintf(stderr, "PirBatchContext was not initialized for batch-tiled PIR\n");
         std::abort();
     }
 
@@ -491,8 +570,8 @@ extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const PirContext &ctx, 
     uint32_t *d_t_res = device_ptr<uint32_t>(ctx.bit_result);
     uint128_t *d_se = device_ptr<uint128_t>(ctx.selection);
     uint32_t *aes_key = device_ptr<uint32_t>(ctx.aes_key);
-    uint128_t *d_partials = device_ptr<uint128_t>(ctx.batch_partials);
-    uint128_t *d_output = device_ptr<uint128_t>(ctx.batch_output);
+    uint128_t *d_partials = device_ptr<uint128_t>(ctx.partials);
+    uint128_t *d_output = device_ptr<uint128_t>(ctx.output);
 
     uint128_t *res = static_cast<uint128_t *>(malloc(N * sizeof(uint128_t) * entry_size));
     std::memset(res, 0, N * entry_size * sizeof(uint128_t));
@@ -521,7 +600,7 @@ extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const PirContext &ctx, 
     CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<N * se_blocks_per_query, se_threads>>>(d_key, d_s_res, d_t_res, d_se));
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    const int P = ctx.batch_blocks;
+    const int P = ctx.blocks;
     const uint64_t entries = 1ULL << n;
     const uint64_t per_block = ((entries + P - 1) / P + 127) / 128 * 128;
     const size_t smem_sync = 128 * entry_size * sizeof(uint128_t);

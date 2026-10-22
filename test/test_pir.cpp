@@ -64,7 +64,7 @@ namespace
         std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
         cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-        PirContext ctx = init_pir(batch_size, n, db.data());
+        PirBatchContext ctx = init_pir_batch(batch_size, n, db.data());
 
         bool ok = true;
         for (int mode = 0; mode < 2; ++mode)

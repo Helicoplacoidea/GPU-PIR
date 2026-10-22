@@ -303,11 +303,13 @@ Constraints:
   `entry_size` `uint128_t` accumulators per thread, so they require
   `batch_size <= 512` with the default `entry_size = 16`.
 - Each batch-tiled block uses 32 KB (`sync`) or 64 KB (`async`) of dynamic
-  shared memory. `init_pir` checks the device limit and configures the async
-  kernel's opt-in shared-memory size.
-- The reported CUDA memory for batch modes comes from the shared `PirContext`
-  and therefore includes the row-major `blocksum` buffer. It is not a pure
-  batch-tiled memory measurement.
+  shared memory. `init_pir_batch` checks the device limit and configures the
+  async kernel's opt-in shared-memory size.
+- Batch modes use a separate `PirBatchContext` (`init_pir_batch`). Its
+  `Total allocated CUDA memory (excluding database)` includes the batch
+  partial/output and the shared full-domain-evaluation buffers, but not the
+  row-major `blocksum`. Row-major and batch modes are therefore benchmarked
+  with separate contexts and report their own memory numbers.
 
 ## Reproducing paper results
 

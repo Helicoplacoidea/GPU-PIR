@@ -41,7 +41,6 @@ bool benchmark_pir(int n, int batch_size)
     std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
 
     cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
-    PirContext ctx = init_pir(batch_size, n, db.data());
 
     auto benchmark_mode = [&](const char *label, auto run) -> bool
     {
@@ -74,14 +73,23 @@ bool benchmark_pir(int n, int batch_size)
     };
 
     bool ok = true;
-    ok = benchmark_mode("DPF-PIR", [&](uint8_t *key)
-                        { return test_dpf_pir(key, ctx, batch_size); }) && ok;
-    ok = benchmark_mode("DPF-PIR batch sync", [&](uint8_t *key)
-                        { return test_dpf_pir_batch(key, ctx, batch_size, 0); }) && ok;
-    ok = benchmark_mode("DPF-PIR batch async", [&](uint8_t *key)
-                        { return test_dpf_pir_batch(key, ctx, batch_size, 1); }) && ok;
 
-    free_cuda_memory(ctx);
+    {
+        PirContext ctx = init_pir(batch_size, n, db.data());
+        ok = benchmark_mode("DPF-PIR", [&](uint8_t *key)
+                            { return test_dpf_pir(key, ctx, batch_size); }) && ok;
+        free_cuda_memory(ctx);
+    }
+
+    {
+        PirBatchContext ctx = init_pir_batch(batch_size, n, db.data());
+        ok = benchmark_mode("DPF-PIR batch sync", [&](uint8_t *key)
+                            { return test_dpf_pir_batch(key, ctx, batch_size, 0); }) && ok;
+        ok = benchmark_mode("DPF-PIR batch async", [&](uint8_t *key)
+                            { return test_dpf_pir_batch(key, ctx, batch_size, 1); }) && ok;
+        free_cuda_memory(ctx);
+    }
+
     return ok;
 }
 

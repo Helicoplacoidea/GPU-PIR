@@ -6,9 +6,6 @@ struct PirContext
 {
     void *db = nullptr;
     void *blocksum = nullptr;
-    void *batch_partials = nullptr; // [batch_blocks][batch][entry_size]
-    void *batch_output = nullptr;   // [batch][entry_size]
-    int batch_blocks = 0;
     void *key = nullptr;
     void *seed = nullptr;
     void *bit = nullptr;
@@ -18,6 +15,23 @@ struct PirContext
     void *bit_result = nullptr;
     void *selection = nullptr;
     void *aes_key = nullptr;
+};
+
+struct PirBatchContext
+{
+    void *db = nullptr;
+    void *partials = nullptr; // [blocks][batch][entry_size]
+    void *output = nullptr;   // [batch][entry_size]
+    void *key = nullptr;
+    void *seed = nullptr;
+    void *bit = nullptr;
+    void *seed_intermediate = nullptr;
+    void *bit_intermediate = nullptr;
+    void *seed_result = nullptr;
+    void *bit_result = nullptr;
+    void *selection = nullptr;
+    void *aes_key = nullptr;
+    int blocks = 0;
 };
 
 struct PirPipelineContext
