@@ -139,11 +139,11 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
     CUDA_CHECK(cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice));
     ctx.db = d_db;
 
-    uint128_t *blocksum_cuda;
-    const size_t blocksum_size = N * ((size_t(1) << n) / 256) * sizeof(uint128_t) * entry_size;
-    CUDA_CHECK(cudaMalloc(&blocksum_cuda, blocksum_size));
-    total_cuda_malloc += blocksum_size;
-    ctx.blocksum = blocksum_cuda;
+    uint128_t *d_output;
+    const size_t output_size = (size_t)N * entry_size * sizeof(uint128_t);
+    CUDA_CHECK(cudaMalloc(&d_output, output_size));
+    total_cuda_malloc += output_size;
+    ctx.output = d_output;
 
     uint8_t *d_key;
     const size_t key_size = key_buffer_size(N, static_cast<int>(maxlayer));
@@ -303,15 +303,15 @@ extern "C++" PirPipelineContext init_pir_pipeline(int N, int n, uint128_t *db)
     CUDA_CHECK(cudaMemcpy(d_db, db, db_size, cudaMemcpyHostToDevice));
     ctx.db = d_db;
 
-    uint128_t *d_input;
+    uint128_t *d_partials;
     uint128_t *d_output;
-    const size_t size_input = entry_size * kPipelineReductionBlocks * sizeof(uint128_t);
+    const size_t size_partials = entry_size * kPipelineReductionBlocks * sizeof(uint128_t);
     const size_t size_output = entry_size * sizeof(uint128_t);
 
-    CUDA_CHECK(cudaMalloc(&d_input, size_input));
+    CUDA_CHECK(cudaMalloc(&d_partials, size_partials));
     CUDA_CHECK(cudaMalloc(&d_output, size_output));
-    total_cuda_malloc += size_input + size_output;
-    ctx.input = d_input;
+    total_cuda_malloc += size_partials + size_output;
+    ctx.partials = d_partials;
     ctx.output = d_output;
 
     uint128_t *d_s;
@@ -417,7 +417,7 @@ extern "C++" PirLutContext init_pir_LUT(int N, int n, uint32_t *db)
 void free_cuda_memory(PirContext &ctx)
 {
     free_device_ptr(ctx.db);
-    free_device_ptr(ctx.blocksum);
+    free_device_ptr(ctx.output);
     free_device_ptr(ctx.key);
     free_device_ptr(ctx.seed);
     free_device_ptr(ctx.bit);
@@ -450,7 +450,7 @@ void free_cuda_memory(PirBatchContext &ctx)
 void free_cuda_memory(PirPipelineContext &ctx)
 {
     free_device_ptr(ctx.db);
-    free_device_ptr(ctx.input);
+    free_device_ptr(ctx.partials);
     free_device_ptr(ctx.output);
     free_device_ptr(ctx.seed);
     free_device_ptr(ctx.bit);
@@ -487,7 +487,7 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
     const size_t key_size = key_buffer_size(N, maxlayer);
 
     uint128_t *d_db = device_ptr<uint128_t>(ctx.db);
-    uint128_t *blocksum_cuda = device_ptr<uint128_t>(ctx.blocksum);
+    uint128_t *d_output = device_ptr<uint128_t>(ctx.output);
     uint8_t *d_key = device_ptr<uint8_t>(ctx.key);
     uint128_t *d_s = device_ptr<uint128_t>(ctx.seed);
     uint32_t *d_t = device_ptr<uint32_t>(ctx.bit);
@@ -529,10 +529,10 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     threads_per_block = 256;
-    CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<N, threads_per_block / 2>>>(d_key, d_se, d_db, blocksum_cuda, 1, N));
+    CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<N, threads_per_block / 2>>>(d_key, d_se, d_db, d_output, 1, N));
     CUDA_CHECK(cudaDeviceSynchronize());
 
-    CUDA_CHECK(cudaMemcpy(res, blocksum_cuda, N * sizeof(uint128_t) * entry_size, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(res, d_output, N * sizeof(uint128_t) * entry_size, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaDeviceSynchronize());
 
     return res;
@@ -687,7 +687,7 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
     const size_t key_size = key_buffer_size(N, maxlayer);
 
     uint128_t *d_db = device_ptr<uint128_t>(ctx.db);
-    uint128_t *d_input = device_ptr<uint128_t>(ctx.input);
+    uint128_t *d_partials = device_ptr<uint128_t>(ctx.partials);
     uint128_t *d_output = device_ptr<uint128_t>(ctx.output);
     uint128_t *d_s = device_ptr<uint128_t>(ctx.seed);
     uint32_t *d_t = device_ptr<uint32_t>(ctx.bit);
@@ -800,11 +800,11 @@ extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineCon
         }
         CUDA_CHECK(cudaStreamWaitEvent(streams[4], events[chunk][3], 0));
 
-        CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<kPipelineReductionBlocks, threads_per_block / 2, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_input, 1, 1));
+        CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<kPipelineReductionBlocks, threads_per_block / 2, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_partials, 1, 1));
         CUDA_CHECK(cudaEventRecord(events[chunk][4], streams[4]));
 
         CUDA_CHECK(cudaStreamWaitEvent(streams[5], events[chunk][4], 0));
-        CUDA_KERNEL_CHECK(BlockReduction<<<1, kPipelineReductionBlocks, 0, streams[5]>>>(d_input, d_output));
+        CUDA_KERNEL_CHECK(BlockReduction<<<1, kPipelineReductionBlocks, 0, streams[5]>>>(d_partials, d_output));
         CUDA_CHECK(cudaEventRecord(events[chunk][5], streams[5]));
         CUDA_CHECK(cudaMemcpyAsync(res + entry_size * chunk, d_output, entry_size * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[5]));
     }
@@ -850,7 +850,7 @@ extern "C++" uint128_t *test_dpf_pir_pipeline_graph_n20_N512(uint8_t *key, const
     if (!state.initialized)
     {
         uint128_t *d_db = device_ptr<uint128_t>(ctx.db);
-        uint128_t *d_input = device_ptr<uint128_t>(ctx.input);
+        uint128_t *d_partials = device_ptr<uint128_t>(ctx.partials);
         uint128_t *d_output = device_ptr<uint128_t>(ctx.output);
         uint128_t *d_s = device_ptr<uint128_t>(ctx.seed);
         uint32_t *d_t = device_ptr<uint32_t>(ctx.bit);
@@ -906,11 +906,11 @@ extern "C++" uint128_t *test_dpf_pir_pipeline_graph_n20_N512(uint8_t *key, const
                 CUDA_CHECK(cudaStreamWaitEvent(streams[4], events[chunk - 1][5], 0));
             }
             CUDA_CHECK(cudaStreamWaitEvent(streams[4], events[chunk][3], 0));
-            CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<256, 128, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_input, 1, 1));
+            CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<256, 128, 0, streams[4]>>>(d_key_offset, d_se, d_db, d_partials, 1, 1));
             CUDA_CHECK(cudaEventRecord(events[chunk][4], streams[4]));
 
             CUDA_CHECK(cudaStreamWaitEvent(streams[5], events[chunk][4], 0));
-            CUDA_KERNEL_CHECK(BlockReduction<<<1, 256, 0, streams[5]>>>(d_input, d_output));
+            CUDA_KERNEL_CHECK(BlockReduction<<<1, 256, 0, streams[5]>>>(d_partials, d_output));
             CUDA_CHECK(cudaMemcpyAsync(state.res_pinned + entry_size * chunk, d_output, entry_size * sizeof(uint128_t), cudaMemcpyDeviceToHost, streams[5]));
             CUDA_CHECK(cudaEventRecord(events[chunk][5], streams[5]));
         }

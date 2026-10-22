@@ -5,7 +5,7 @@ typedef unsigned char *DCF_Keys;
 struct PirContext
 {
     void *db = nullptr;
-    void *blocksum = nullptr;
+    void *output = nullptr;
     void *key = nullptr;
     void *seed = nullptr;
     void *bit = nullptr;
@@ -37,7 +37,7 @@ struct PirBatchContext
 struct PirPipelineContext
 {
     void *db = nullptr;
-    void *input = nullptr;
+    void *partials = nullptr;
     void *output = nullptr;
     void *seed = nullptr;
     void *bit = nullptr;
