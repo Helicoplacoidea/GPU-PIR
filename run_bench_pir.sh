@@ -12,10 +12,10 @@
 #     bench_results_pir/memory_vs_n.png       (pipeline vs non-pipeline)
 #     bench_results_pir/run_log.txt
 #
-# 备注: bench_pir 二进制会三连跑 (普通/pipeline/LUT); 本脚本只解析前两种 (普通=
-#       non-pipeline, pipeline=DPF-PIR pipeline), LUT 段被忽略。普通 PIR 路径显存计入
-#       total_cuda_malloc 但排除 db; pipeline 路径该统计口径几乎不含 db 大头, 故其
-#       memory 数值极小, 论文引用时需注明统计口径。
+# 备注: bench_pir 二进制会依次跑 row-major / batch sync / batch async / pipeline /
+#       LUT; 本脚本解析前四种, LUT 段被忽略。row-major 与 batch 模式共用 PirContext,
+#       其 memory 数值包含 blocksum 且排除 db; pipeline 路径该统计口径几乎不含 db 大头,
+#       故其 memory 数值极小, 论文引用时需注明统计口径。
 #
 set -u
 

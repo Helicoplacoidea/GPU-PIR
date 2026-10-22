@@ -6,8 +6,8 @@ struct PirContext
 {
     void *db = nullptr;
     void *blocksum = nullptr;
-    void *batch_partials = nullptr;
-    void *batch_output = nullptr;
+    void *batch_partials = nullptr; // [batch_blocks][batch][entry_size]
+    void *batch_output = nullptr;   // [batch][entry_size]
     int batch_blocks = 0;
     void *key = nullptr;
     void *seed = nullptr;
