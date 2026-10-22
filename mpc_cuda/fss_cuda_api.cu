@@ -145,6 +145,36 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
     total_cuda_malloc += blocksum_size;
     ctx.blocksum = blocksum_cuda;
 
+    int device_id = 0;
+    CUDA_CHECK(cudaGetDevice(&device_id));
+    cudaDeviceProp device_prop{};
+    CUDA_CHECK(cudaGetDeviceProperties(&device_prop, device_id));
+    const int batch_blocks = device_prop.multiProcessorCount > 0 ? device_prop.multiProcessorCount : 1;
+    ctx.batch_blocks = batch_blocks;
+
+    const size_t batch_partial_size = (size_t)batch_blocks * N * entry_size * sizeof(uint128_t);
+    const size_t batch_output_size = (size_t)N * entry_size * sizeof(uint128_t);
+    uint128_t *d_batch_partials;
+    uint128_t *d_batch_output;
+    CUDA_CHECK(cudaMalloc(&d_batch_partials, batch_partial_size));
+    CUDA_CHECK(cudaMemset(d_batch_partials, 0, batch_partial_size));
+    CUDA_CHECK(cudaMalloc(&d_batch_output, batch_output_size));
+    ctx.batch_partials = d_batch_partials;
+    ctx.batch_output = d_batch_output;
+    total_cuda_malloc += batch_partial_size + batch_output_size;
+
+    const size_t batch_smem_async = 2 * 128 * entry_size * sizeof(uint128_t);
+    if (batch_smem_async > device_prop.sharedMemPerBlockOptin)
+    {
+        std::fprintf(stderr,
+                     "BatchMulRedAsync needs %zu bytes of shared memory but device limit is %zu\n",
+                     batch_smem_async, device_prop.sharedMemPerBlockOptin);
+        std::abort();
+    }
+    CUDA_CHECK(cudaFuncSetAttribute(BatchMulRedAsync,
+                                    cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                    static_cast<int>(batch_smem_async)));
+
     uint8_t *d_key;
     const size_t key_size = key_buffer_size(N, static_cast<int>(maxlayer));
     CUDA_CHECK(cudaMalloc(&d_key, key_size));
@@ -324,6 +354,8 @@ void free_cuda_memory(PirContext &ctx)
 {
     free_device_ptr(ctx.db);
     free_device_ptr(ctx.blocksum);
+    free_device_ptr(ctx.batch_partials);
+    free_device_ptr(ctx.batch_output);
     free_device_ptr(ctx.key);
     free_device_ptr(ctx.seed);
     free_device_ptr(ctx.bit);
@@ -422,6 +454,93 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     CUDA_CHECK(cudaMemcpy(res, blocksum_cuda, N * sizeof(uint128_t) * entry_size, cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    return res;
+}
+
+extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const PirContext &ctx, int N, int mode)
+{
+    const int n = key[0];
+    const int maxlayer = n - 7;
+    const size_t key_size = key_buffer_size(N, maxlayer);
+
+    if (N <= 0 || N > 512)
+    {
+        std::fprintf(stderr, "test_dpf_pir_batch supports 1 <= batch_size <= 512\n");
+        std::abort();
+    }
+    if (mode != 0 && mode != 1)
+    {
+        std::fprintf(stderr, "test_dpf_pir_batch mode must be 0 (sync) or 1 (async)\n");
+        std::abort();
+    }
+    if (ctx.batch_partials == nullptr || ctx.batch_output == nullptr || ctx.batch_blocks <= 0)
+    {
+        std::fprintf(stderr, "PirContext was not initialized for batch-tiled PIR\n");
+        std::abort();
+    }
+
+    uint128_t *d_db = device_ptr<uint128_t>(ctx.db);
+    uint8_t *d_key = device_ptr<uint8_t>(ctx.key);
+    uint128_t *d_s = device_ptr<uint128_t>(ctx.seed);
+    uint32_t *d_t = device_ptr<uint32_t>(ctx.bit);
+    uint128_t *d_s_intermediate = device_ptr<uint128_t>(ctx.seed_intermediate);
+    uint32_t *d_t_intermediate = device_ptr<uint32_t>(ctx.bit_intermediate);
+    uint128_t *d_s_res = device_ptr<uint128_t>(ctx.seed_result);
+    uint32_t *d_t_res = device_ptr<uint32_t>(ctx.bit_result);
+    uint128_t *d_se = device_ptr<uint128_t>(ctx.selection);
+    uint32_t *aes_key = device_ptr<uint32_t>(ctx.aes_key);
+    uint128_t *d_partials = device_ptr<uint128_t>(ctx.batch_partials);
+    uint128_t *d_output = device_ptr<uint128_t>(ctx.batch_output);
+
+    uint128_t *res = static_cast<uint128_t *>(malloc(N * sizeof(uint128_t) * entry_size));
+    std::memset(res, 0, N * entry_size * sizeof(uint128_t));
+
+    CUDA_CHECK(cudaMemcpy(d_key, key, key_size, cudaMemcpyHostToDevice));
+    CUDA_KERNEL_CHECK(seed_copy<<<(N + 255) / 256, 256>>>(d_s, d_t, d_key, maxlayer, N));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    const int r = 9;
+    if (maxlayer <= r)
+    {
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_s_res, d_t_res));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+    else
+    {
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N, (1 << (maxlayer - r)) / 2>>>(aes_key, maxlayer - r, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate));
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N * (1 << (maxlayer - r)), (1 << r) / 2>>>(aes_key, r, maxlayer - r, d_key, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res));
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    const int se_threads = std::min(1 << maxlayer, 256);
+    const int se_blocks_per_query = (1 << maxlayer) / se_threads;
+    CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<N * se_blocks_per_query, se_threads>>>(d_key, d_s_res, d_t_res, d_se));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    const int P = ctx.batch_blocks;
+    const uint64_t entries = 1ULL << n;
+    const uint64_t per_block = ((entries + P - 1) / P + 127) / 128 * 128;
+    const size_t smem_sync = 128 * entry_size * sizeof(uint128_t);
+    const size_t smem_async = 2 * smem_sync;
+
+    if (mode == 0)
+    {
+        CUDA_KERNEL_CHECK(BatchMulRedSync<<<P, N, smem_sync>>>(d_se, d_db, d_partials, n, per_block, N));
+    }
+    else
+    {
+        CUDA_KERNEL_CHECK(BatchMulRedAsync<<<P, N, smem_async>>>(d_se, d_db, d_partials, n, per_block, N));
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_KERNEL_CHECK(BatchReducePartials<<<N, entry_size>>>(d_partials, d_output, P, N));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    CUDA_CHECK(cudaMemcpy(res, d_output, N * sizeof(uint128_t) * entry_size, cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaDeviceSynchronize());
 
     return res;

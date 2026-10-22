@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# run_bench_pir.sh — 测试流水线 (pipeline) 与非流水线 (non-pipeline) PIR 实现的
-# 吞吐量与显存占用, 解析后生成 CSV 与两张 vs-n 图。
+# run_bench_pir.sh — 测试 row-major / pipeline / batch sync / batch async 四种
+# PIR 实现的吞吐量与显存占用, 解析后生成 CSV 与两张 vs-n 图。
 #
 #   n      = 19, 20, 21, 22, 23, 24
 #   batch  = 512
@@ -49,7 +49,7 @@ from datetime import datetime
 bench, out_dir, raw_log, csv_path, batch = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 n_values = [int(x) for x in sys.argv[6:]]
 
-MODES = ["DPF-PIR", "DPF-PIR pipeline"]  # 只关心 non-pipeline 与 pipeline
+MODES = ["DPF-PIR", "DPF-PIR pipeline", "DPF-PIR batch sync", "DPF-PIR batch async"]
 
 def parse_run(text):
     lines = text.splitlines()
@@ -61,14 +61,19 @@ def parse_run(text):
         for l in lines[s:seg_end]:
             m=re.search(r"Total allocated CUDA memory \(excluding database\):\s*([\d.]+)\s*MB",l)
             if m: mem=float(m.group(1))
-        mode_label=t_ms=thr=None
+        current=None
         for l in lines[s:seg_end]:
             mt=re.match(r"^(.+?)\s+Time taken:\s*([\d.eE+-]+)\s*ms",l)
-            if mt: mode_label=mt.group(1).strip(); t_ms=float(mt.group(2))
+            if mt:
+                current=mt.group(1).strip()
+                results[current]={"time_ms":float(mt.group(2)),"throughput":None,"memory_mb":mem}
+                continue
             mh=re.search(r"Throughput:\s*([\d.eE+-]+)\s*pirs/s",l)
-            if mh: thr=float(mh.group(1))
-        if mode_label in MODES:
-            results[mode_label]={"time_ms":t_ms,"throughput":thr,"memory_mb":mem}
+            if mh and current is not None:
+                results[current]["throughput"]=float(mh.group(1))
+        for mode in list(results):
+            if mode not in MODES:
+                results.pop(mode)
     return results
 
 rows=[]
@@ -88,7 +93,8 @@ with open(raw_log,"w") as logf:
         res=parse_run(proc.stdout)
         for mode in MODES:
             r=res.get(mode)
-            if r and r["time_ms"] is not None:
+            if (r and r["time_ms"] is not None and r["throughput"] is not None
+                    and r["memory_mb"] is not None):
                 rows.append({"n":n,"mode":mode,"throughput":r["throughput"],"memory_mb":r["memory_mb"]})
                 print(f"  n={n:<3} {mode:<18} thrpt={r['throughput']:.1f} pirs/s  mem={r['memory_mb']} MB")
             else:
@@ -109,7 +115,12 @@ if not rows:
     print("[WARN] 无数据, 跳过画图"); sys.exit(0)
 
 df=pd.DataFrame(rows)
-mode_map={"DPF-PIR":"Non-pipeline","DPF-PIR pipeline":"Pipeline"}
+mode_map={
+    "DPF-PIR":"Row-major",
+    "DPF-PIR pipeline":"Pipeline",
+    "DPF-PIR batch sync":"Batch sync",
+    "DPF-PIR batch async":"Batch async",
+}
 df["mode"]=df["mode"].map(mode_map)
 
 def _save(fig,name):
@@ -119,7 +130,8 @@ def _save(fig,name):
 
 # 1) 吞吐量 vs n
 fig,ax=plt.subplots(figsize=(7,4.5))
-for mod,mk,col in [("Non-pipeline","o","tab:blue"),("Pipeline","s","tab:red")]:
+for mod,mk,col in [("Row-major","o","tab:blue"),("Pipeline","s","tab:red"),
+                   ("Batch sync","^","tab:green"),("Batch async","D","tab:orange")]:
     d=df[df["mode"]==mod].sort_values("n")
     ax.plot(d["n"],d["throughput"],marker=mk,color=col,label=mod,linewidth=2)
 for _,r in df.iterrows():
@@ -131,7 +143,8 @@ _save(fig,"throughput_vs_n.png")
 
 # 2) 显存 vs n
 fig,ax=plt.subplots(figsize=(7,4.5))
-for mod,mk,col in [("Non-pipeline","o","tab:blue"),("Pipeline","s","tab:red")]:
+for mod,mk,col in [("Row-major","o","tab:blue"),("Pipeline","s","tab:red"),
+                   ("Batch sync","^","tab:green"),("Batch async","D","tab:orange")]:
     d=df[df["mode"]==mod].sort_values("n")
     ax.plot(d["n"],d["memory_mb"],marker=mk,color=col,label=mod,linewidth=2)
 ax.set_xlabel("n (log2 database size)"); ax.set_ylabel("CUDA memory (MB, excludes database)")

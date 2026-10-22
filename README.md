@@ -271,13 +271,51 @@ Default values:
 - `n = 22`
 - `batch_size = 512`
 
+### 4. Batch-tiled PIR modes (row-major)
+
+`bench_pir` and `test_pir` also exercise two one-pass batch-tiled variants in
+`mpc_cuda/batch_tiled.cu`:
+
+- **Batch sync** (`BatchMulRedSync`): each CUDA block owns a contiguous DB
+  range, loads a 128-entry tile to shared memory once, and all queries consume
+  it before advancing to the next tile.
+- **Batch async** (`BatchMulRedAsync`): the same tiling with a double-buffered
+  shared-memory tile loaded via `cp.async` (`cuda_pipeline`).
+
+Both modes use the existing row-major database and the existing query-major
+selection vector (`se`). They are compared against the existing row-major
+`MultiplicationReduction_grid_row` inside the same `bench_pir` run:
+
+```bash
+./build/test/bench_pir 24 512
+# output labels:
+#   DPF-PIR              (row-major)
+#   DPF-PIR batch sync
+#   DPF-PIR batch async
+```
+
+`test_pir` verifies both batch modes against the reconstructed database
+(`[PASS] test_pir_batch_sync`, `[PASS] test_pir_batch_async`).
+
+Constraints:
+
+- The batch-tiled kernels use one thread per query and hold
+  `entry_size` `uint128_t` accumulators per thread, so they require
+  `batch_size <= 512` with the default `entry_size = 16`.
+- Each batch-tiled block uses 32 KB (`sync`) or 64 KB (`async`) of dynamic
+  shared memory. `init_pir` checks the device limit and configures the async
+  kernel's opt-in shared-memory size.
+- The reported CUDA memory for batch modes comes from the shared `PirContext`
+  and therefore includes the row-major `blocksum` buffer. It is not a pure
+  batch-tiled memory measurement.
+
 ## Reproducing paper results
 
 Two helper scripts in the repository root drive the benchmarks for reproducing and verifying the paper's experimental results. Each writes structured data plus figures into its own output directory. Both require a completed build (see [Build Instructions](#build-instructions)) and a visible CUDA device, and they need Python 3 with `matplotlib`, `pandas`, and `numpy` for the figure-generation step.
 
 | Script | Reproduces | Configuration | Output directory |
 |--------|-----------|---------------|------------------|
-| `run_bench_pir.sh` | **Table 2** — throughput and CUDA memory of the pipeline vs. non-pipeline PIR implementations | `n = 19..24`, `batch_size = 512` | `bench_results_pir/` |
+| `run_bench_pir.sh` | **Table 2** — throughput and CUDA memory of row-major, pipeline, batch sync and batch async PIR implementations | `n = 19..24`, `batch_size = 512` | `bench_results_pir/` |
 | `run_bench_lut.sh` | **Figure 11** — DPF-PIR LUT throughput as a function of `batch_size` | `n ∈ {16, 18, 20, 24}`, `batch_size ∈ {1, 10, 100, 1000, 10000}` | `bench_results_lut/` |
 
 Usage (defaults reproduce the paper directly):
@@ -299,7 +337,7 @@ Both scripts also accept optional overrides:
 
 ### `run_bench_pir.sh` (Table 2)
 
-Runs `bench_pir` for `n = 19, 20, ..., 24` at `batch_size = 512` and parses the `DPF-PIR` (non-pipeline) and `DPF-PIR pipeline` segments. The LUT segment emitted by `bench_pir` is ignored here. For each `(n, mode)` point it records throughput (PIRs/s) and allocated CUDA memory (MB), then plots the two modes against `n`. Produces:
+Runs `bench_pir` for `n = 19, 20, ..., 24` at `batch_size = 512` and parses the `DPF-PIR` (row-major), `DPF-PIR pipeline`, `DPF-PIR batch sync` and `DPF-PIR batch async` segments. The LUT segment emitted by `bench_pir` is ignored here. For each `(n, mode)` point it records throughput (PIRs/s) and allocated CUDA memory (MB), then plots the four modes against `n`. Produces:
 
 - `bench_results_pir/results.csv` — `n, mode, throughput, memory_mb`
 - `bench_results_pir/throughput_vs_n.png` and `bench_results_pir/memory_vs_n.png`

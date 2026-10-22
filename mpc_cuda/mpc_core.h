@@ -13,6 +13,7 @@ using namespace emp;
 // struct PirStreamContext is defined in pir_context.h.
 
 extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N);
+extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const PirContext &ctx, int N, int mode);
 extern "C++" uint128_t *test_dpf_pir_pipeline(uint8_t *key, const PirPipelineContext &ctx, const PirStreamContext &handles, int N);
 extern "C++" uint32_t *test_dpf_pir_LUT(uint8_t *key, const PirLutContext &ctx, int N);
 extern "C++" PirContext init_pir(int N, int n, uint128_t *db);

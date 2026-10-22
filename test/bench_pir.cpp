@@ -28,6 +28,11 @@ bool benchmark_pir(int n, int batch_size)
     {
         return false;
     }
+    if (batch_size > 512)
+    {
+        std::cerr << "[FAIL] bench_pir: batch-tiled modes require batch_size <= 512\n";
+        return false;
+    }
 
     const int maxlayer = n - 7;
     std::vector<uint128_t> db = make_random_pir_db(n);
@@ -38,34 +43,46 @@ bool benchmark_pir(int n, int batch_size)
     cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
     PirContext ctx = init_pir(batch_size, n, db.data());
 
-    uint128_t *verify0 = test_dpf_pir(k0.data(), ctx, batch_size);
-    uint128_t *verify1 = test_dpf_pir(k1.data(), ctx, batch_size);
-
-    std::string error;
-    const bool verified = verify_pir_response(verify0, verify1, db.data(), queries.data(), batch_size, &error);
-    free(verify0);
-    free(verify1);
-    if (!verified)
+    auto benchmark_mode = [&](const char *label, auto run) -> bool
     {
-        std::cerr << "[FAIL] bench_pir smoke check: " << error << '\n';
-        free_cuda_memory(ctx);
-        return false;
-    }
+        uint128_t *verify0 = run(k0.data());
+        uint128_t *verify1 = run(k1.data());
 
-    uint128_t *warmup = test_dpf_pir(k0.data(), ctx, batch_size);
-    free(warmup);
+        std::string error;
+        const bool verified = verify_pir_response(verify0, verify1, db.data(), queries.data(), batch_size, &error);
+        free(verify0);
+        free(verify1);
+        if (!verified)
+        {
+            std::cerr << "[FAIL] bench_pir smoke check (" << label << "): " << error << '\n';
+            return false;
+        }
 
-    auto start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < kBenchmarkIterations; ++i)
-    {
-        uint128_t *result = test_dpf_pir(k0.data(), ctx, batch_size);
-        free(result);
-    }
-    auto end = std::chrono::high_resolution_clock::now();
+        uint128_t *warmup = run(k0.data());
+        free(warmup);
+
+        auto start = std::chrono::high_resolution_clock::now();
+        for (int i = 0; i < kBenchmarkIterations; ++i)
+        {
+            uint128_t *result = run(k0.data());
+            free(result);
+        }
+        auto end = std::chrono::high_resolution_clock::now();
+
+        print_benchmark_result(label, end - start, batch_size);
+        return true;
+    };
+
+    bool ok = true;
+    ok = benchmark_mode("DPF-PIR", [&](uint8_t *key)
+                        { return test_dpf_pir(key, ctx, batch_size); }) && ok;
+    ok = benchmark_mode("DPF-PIR batch sync", [&](uint8_t *key)
+                        { return test_dpf_pir_batch(key, ctx, batch_size, 0); }) && ok;
+    ok = benchmark_mode("DPF-PIR batch async", [&](uint8_t *key)
+                        { return test_dpf_pir_batch(key, ctx, batch_size, 1); }) && ok;
 
     free_cuda_memory(ctx);
-    print_benchmark_result("DPF-PIR", end - start, batch_size);
-    return true;
+    return ok;
 }
 
 bool benchmark_pir_pipeline(int n, int batch_size)

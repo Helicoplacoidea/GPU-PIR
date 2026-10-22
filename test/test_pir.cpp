@@ -45,6 +45,56 @@ namespace
         return true;
     }
 
+    bool run_pir_batch_test(int n, int batch_size)
+    {
+        if (!validate_packed_dpf_depth(n, "test_pir_batch"))
+        {
+            return false;
+        }
+        if (batch_size > 512)
+        {
+            std::cerr << "[FAIL] test_pir_batch: batch_size must be <= 512\n";
+            return false;
+        }
+
+        const int maxlayer = n - 7;
+        std::vector<uint128_t> db = make_random_pir_db(n);
+        std::vector<uint64_t> queries = make_descending_queries(n, batch_size);
+        std::vector<uint8_t> k0(batch_size * dpf_key_bytes(n));
+        std::vector<uint8_t> k1(batch_size * dpf_key_bytes(n));
+
+        cudaDPFkeygen(k0.data(), k1.data(), queries.data(), n, maxlayer, batch_size);
+        PirContext ctx = init_pir(batch_size, n, db.data());
+
+        bool ok = true;
+        for (int mode = 0; mode < 2; ++mode)
+        {
+            uint128_t *res0 = test_dpf_pir_batch(k0.data(), ctx, batch_size, mode);
+            uint128_t *res1 = test_dpf_pir_batch(k1.data(), ctx, batch_size, mode);
+
+            std::string error;
+            const bool verified = verify_pir_response(res0, res1, db.data(), queries.data(), batch_size, &error);
+
+            free(res0);
+            free(res1);
+
+            if (!verified)
+            {
+                std::cerr << "[FAIL] test_pir_batch_" << (mode == 0 ? "sync" : "async") << ": " << error << '\n';
+                ok = false;
+            }
+        }
+
+        free_cuda_memory(ctx);
+
+        if (ok)
+        {
+            std::cout << "[PASS] test_pir_batch_sync\n";
+            std::cout << "[PASS] test_pir_batch_async\n";
+        }
+        return ok;
+    }
+
     bool run_pir_pipeline_test(int n, int batch_size)
     {
         if (!validate_packed_dpf_depth(n, "test_pir_pipeline"))
@@ -143,6 +193,7 @@ int main(int argc, char **argv)
 
     bool ok = true;
     ok = run_pir_test(n, batch_size) && ok;
+    ok = run_pir_batch_test(n, batch_size) && ok;
     ok = run_pir_pipeline_test(n, batch_size) && ok;
     ok = run_pir_lut_test(n, batch_size) && ok;
 
