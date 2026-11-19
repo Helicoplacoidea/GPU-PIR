@@ -324,7 +324,7 @@ __global__ void dpf_gen_kernel(uint32_t key[4 * (14 + 1)], uint64_t *alpha, int 
 	if (tid >= N)
 		return;
 	uint32_t expanded_key[4 * (14 + 1)];
-	memcpy(expanded_key, key, 4 * (14 + 1) * sizeof(uint32_t));
+	memcpy(expanded_key, key, 4 * (10 + 1) * sizeof(uint32_t));
 	AES_Generator_device prg;
 	unsigned char *k0_local;
 	unsigned char *k1_local;
@@ -373,7 +373,8 @@ __global__ void EvalAll_LBLEvaluation(uint32_t *key, int layer, int maxlayer, in
 	t_local[(idx + stride - 1) * 2 + 2] = tR;
 }
 
-__global__ void EvalAll_BlockEvaluation(uint32_t *key, int layer_len, int layer, unsigned char *k, uint128_t *s, uint32_t *t, uint128_t *res_s, uint32_t *res_t)
+template <bool GenerateSelection>
+__device__ __forceinline__ void EvalAll_BlockEvaluation_body(uint32_t *key, int layer_len, int layer, unsigned char *k, uint128_t *s, uint32_t *t, uint128_t *res_s, uint32_t *res_t)
 {
 
 	__shared__ uint128_t shared_s[512 * 2];
@@ -396,7 +397,6 @@ __global__ void EvalAll_BlockEvaluation(uint32_t *key, int layer_len, int layer,
 	uint128_t *s_local = (uint128_t *)(s + batch_id * (1 << layer));
 	uint32_t *t_local = (uint32_t *)(t + batch_id * (1 << layer));
 	uint128_t *res_s_local = (uint128_t *)(res_s + batch_id * (1 << (layer_len + layer)));
-	uint32_t *res_t_local = (uint32_t *)(res_t + batch_id * (1 << (layer_len + layer)));
 
 	if (tid == 0)
 	{
@@ -445,11 +445,22 @@ __global__ void EvalAll_BlockEvaluation(uint32_t *key, int layer_len, int layer,
 
 			if (i == layer_len - 1)
 			{
-				res_s_local[idx * 2] = sL;
-				res_s_local[idx * 2 + 1] = sR;
+				if constexpr (GenerateSelection)
+				{
+					uint128_t finalblock;
+					memcpy(&finalblock, &k_local[18 * (maxlayer + 1)], 16);
+					res_s_local[idx * 2] = sL ^ finalblock.select(tL);
+					res_s_local[idx * 2 + 1] = sR ^ finalblock.select(tR);
+				}
+				else
+				{
+					uint32_t *res_t_local = (uint32_t *)(res_t + batch_id * (1 << (layer_len + layer)));
+					res_s_local[idx * 2] = sL;
+					res_s_local[idx * 2 + 1] = sR;
 
-				res_t_local[idx * 2] = tL;
-				res_t_local[idx * 2 + 1] = tR;
+					res_t_local[idx * 2] = tL;
+					res_t_local[idx * 2 + 1] = tR;
+				}
 			}
 			else
 			{
@@ -466,6 +477,16 @@ __global__ void EvalAll_BlockEvaluation(uint32_t *key, int layer_len, int layer,
 	// res_s_local[idx] = shared_s[(tid + (1 << layer_len) - 1)];
 	// res_t_local[idx] = shared_t[tid + (1 << layer_len) - 1];
 	// __syncthreads();
+}
+
+__global__ void EvalAll_BlockEvaluation(uint32_t *key, int layer_len, int layer, unsigned char *k, uint128_t *s, uint32_t *t, uint128_t *res_s, uint32_t *res_t)
+{
+	EvalAll_BlockEvaluation_body<false>(key, layer_len, layer, k, s, t, res_s, res_t);
+}
+
+__global__ void EvalAll_BlockEvaluation_Se(uint32_t *key, int layer_len, int layer, unsigned char *k, uint128_t *s, uint32_t *t, uint128_t *se)
+{
+	EvalAll_BlockEvaluation_body<true>(key, layer_len, layer, k, s, t, se, nullptr);
 }
 
 __global__ void EvalAll_BlockEvaluation_nobankconflict(uint32_t *key, int layer_len, int layer, unsigned char *k, uint128_t *s, uint32_t *t, uint128_t *res_s, uint32_t *res_t)
@@ -1005,6 +1026,6 @@ __global__ void seed_copy(uint128_t *d_s, uint32_t *d_t, uint8_t *key, int maxla
 	if (idx < N)
 	{
 		memcpy(d_s + idx, &key[1 + idx * (1 + 16 + 1 + 18 * maxlayer + 16)], 16);
-		memcpy(d_t + idx, &key[17 + idx * (1 + 16 + 1 + 18 * maxlayer + 16)], 1);
+		d_t[idx] = key[17 + idx * (1 + 16 + 1 + 18 * maxlayer + 16)];
 	}
 }

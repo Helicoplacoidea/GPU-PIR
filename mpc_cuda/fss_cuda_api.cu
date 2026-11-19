@@ -147,6 +147,22 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
     total_cuda_malloc += output_size;
     ctx.output = d_output;
 
+    int device_id = 0;
+    cudaDeviceProp device_prop{};
+    CUDA_CHECK(cudaGetDevice(&device_id));
+    CUDA_CHECK(cudaGetDeviceProperties(&device_prop, device_id));
+    const uint64_t rows = uint64_t{1} << n;
+    const uint64_t row_groups = std::max<uint64_t>(1, rows / 128);
+    const int partitions = std::max(1, std::min(device_prop.multiProcessorCount > 0
+                                                   ? device_prop.multiProcessorCount : 1,
+                                               static_cast<int>(row_groups)));
+    uint128_t *d_partials;
+    const size_t partial_size = size_t(partitions) * entry_size * sizeof(uint128_t);
+    CUDA_CHECK(cudaMalloc(&d_partials, partial_size));
+    total_cuda_malloc += partial_size;
+    ctx.partials = d_partials;
+    ctx.num_partitions = partitions;
+
     uint8_t *d_key;
     const size_t key_size = key_buffer_size(N, static_cast<int>(maxlayer));
     CUDA_CHECK(cudaMalloc(&d_key, key_size));
@@ -155,36 +171,28 @@ extern "C++" PirContext init_pir(int N, int n, uint128_t *db)
 
     uint128_t *d_s;
     uint128_t *d_s_intermediate;
-    uint128_t *d_s_res;
     uint128_t *d_se;
     uint32_t *d_t;
     uint32_t *d_t_intermediate;
-    uint32_t *d_t_res;
 
     const size_t size_d_s = N * sizeof(uint128_t);
     const size_t size_d_t = N * sizeof(uint32_t);
     const size_t size_d_s_intermediate = N * (size_t(1) << 10) * sizeof(uint128_t);
     const size_t size_d_t_intermediate = N * (size_t(1) << 10) * sizeof(uint32_t);
-    const size_t size_d_s_res = N * (size_t(1) << maxlayer) * sizeof(uint128_t);
-    const size_t size_d_t_res = N * (size_t(1) << maxlayer) * sizeof(uint32_t);
     const size_t size_d_se = N * (size_t(1) << maxlayer) * sizeof(uint128_t);
 
     CUDA_CHECK(cudaMalloc(&d_s, size_d_s));
     CUDA_CHECK(cudaMalloc(&d_t, size_d_t));
     CUDA_CHECK(cudaMalloc(&d_s_intermediate, size_d_s_intermediate));
     CUDA_CHECK(cudaMalloc(&d_t_intermediate, size_d_t_intermediate));
-    CUDA_CHECK(cudaMalloc(&d_s_res, size_d_s_res));
-    CUDA_CHECK(cudaMalloc(&d_t_res, size_d_t_res));
     CUDA_CHECK(cudaMalloc(&d_se, size_d_se));
 
-    total_cuda_malloc += size_d_s + size_d_t + size_d_s_intermediate + size_d_t_intermediate + size_d_s_res + size_d_t_res + size_d_se;
+    total_cuda_malloc += size_d_s + size_d_t + size_d_s_intermediate + size_d_t_intermediate + size_d_se;
 
     ctx.seed = d_s;
     ctx.bit = d_t;
     ctx.seed_intermediate = d_s_intermediate;
     ctx.bit_intermediate = d_t_intermediate;
-    ctx.seed_result = d_s_res;
-    ctx.bit_result = d_t_res;
     ctx.selection = d_se;
 
     uint32_t *aes_key;
@@ -243,36 +251,28 @@ extern "C++" pir_batch_context init_pir_batch(int batch_size, int db_bits, uint1
 
     uint128_t *d_s;
     uint128_t *d_s_intermediate;
-    uint128_t *d_s_res;
     uint128_t *d_se;
     uint32_t *d_t;
     uint32_t *d_t_intermediate;
-    uint32_t *d_t_res;
 
     const size_t size_d_s = batch_size * sizeof(uint128_t);
     const size_t size_d_t = batch_size * sizeof(uint32_t);
     const size_t size_d_s_intermediate = batch_size * (size_t(1) << 10) * sizeof(uint128_t);
     const size_t size_d_t_intermediate = batch_size * (size_t(1) << 10) * sizeof(uint32_t);
-    const size_t size_d_s_res = batch_size * (size_t(1) << maxlayer) * sizeof(uint128_t);
-    const size_t size_d_t_res = batch_size * (size_t(1) << maxlayer) * sizeof(uint32_t);
     const size_t size_d_se = batch_size * (size_t(1) << maxlayer) * sizeof(uint128_t);
 
     CUDA_CHECK(cudaMalloc(&d_s, size_d_s));
     CUDA_CHECK(cudaMalloc(&d_t, size_d_t));
     CUDA_CHECK(cudaMalloc(&d_s_intermediate, size_d_s_intermediate));
     CUDA_CHECK(cudaMalloc(&d_t_intermediate, size_d_t_intermediate));
-    CUDA_CHECK(cudaMalloc(&d_s_res, size_d_s_res));
-    CUDA_CHECK(cudaMalloc(&d_t_res, size_d_t_res));
     CUDA_CHECK(cudaMalloc(&d_se, size_d_se));
 
-    total_cuda_malloc += size_d_s + size_d_t + size_d_s_intermediate + size_d_t_intermediate + size_d_s_res + size_d_t_res + size_d_se;
+    total_cuda_malloc += size_d_s + size_d_t + size_d_s_intermediate + size_d_t_intermediate + size_d_se;
 
     ctx.seed = d_s;
     ctx.bit = d_t;
     ctx.seed_intermediate = d_s_intermediate;
     ctx.bit_intermediate = d_t_intermediate;
-    ctx.seed_result = d_s_res;
-    ctx.bit_result = d_t_res;
     ctx.selection = d_se;
 
     uint128_t *d_partials;
@@ -425,13 +425,12 @@ void free_cuda_memory(PirContext &ctx)
 {
     free_device_ptr(ctx.db);
     free_device_ptr(ctx.output);
+    free_device_ptr(ctx.partials);
     free_device_ptr(ctx.key);
     free_device_ptr(ctx.seed);
     free_device_ptr(ctx.bit);
     free_device_ptr(ctx.seed_intermediate);
     free_device_ptr(ctx.bit_intermediate);
-    free_device_ptr(ctx.seed_result);
-    free_device_ptr(ctx.bit_result);
     free_device_ptr(ctx.selection);
     free_device_ptr(ctx.aes_key);
     std::cout << "CUDA memory freed successfully!" << std::endl;
@@ -447,8 +446,6 @@ void free_cuda_memory(pir_batch_context &ctx)
     free_device_ptr(ctx.bit);
     free_device_ptr(ctx.seed_intermediate);
     free_device_ptr(ctx.bit_intermediate);
-    free_device_ptr(ctx.seed_result);
-    free_device_ptr(ctx.bit_result);
     free_device_ptr(ctx.selection);
     free_device_ptr(ctx.aes_key);
     std::cout << "CUDA memory freed successfully!" << std::endl;
@@ -495,13 +492,12 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
 
     uint128_t *d_db = device_ptr<uint128_t>(ctx.db);
     uint128_t *d_output = device_ptr<uint128_t>(ctx.output);
+    uint128_t *d_partials = device_ptr<uint128_t>(ctx.partials);
     uint8_t *d_key = device_ptr<uint8_t>(ctx.key);
     uint128_t *d_s = device_ptr<uint128_t>(ctx.seed);
     uint32_t *d_t = device_ptr<uint32_t>(ctx.bit);
     uint128_t *d_s_intermediate = device_ptr<uint128_t>(ctx.seed_intermediate);
     uint32_t *d_t_intermediate = device_ptr<uint32_t>(ctx.bit_intermediate);
-    uint128_t *d_s_res = device_ptr<uint128_t>(ctx.seed_result);
-    uint32_t *d_t_res = device_ptr<uint32_t>(ctx.bit_result);
     uint128_t *d_se = device_ptr<uint128_t>(ctx.selection);
     uint32_t *aes_key = device_ptr<uint32_t>(ctx.aes_key);
 
@@ -513,12 +509,11 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
     CUDA_CHECK(cudaDeviceSynchronize());
 
     int threads_per_block;
-    int blocks_per_grid;
     const int r = 9;
 
     if (maxlayer <= r)
     {
-        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_s_res, d_t_res));
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation_Se<<<N, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_se));
         CUDA_CHECK(cudaDeviceSynchronize());
     }
     else
@@ -526,17 +521,24 @@ extern "C++" uint128_t *test_dpf_pir(uint8_t *key, const PirContext &ctx, int N)
         CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N, (1 << (maxlayer - r)) / 2>>>(aes_key, maxlayer - r, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate));
         CUDA_CHECK(cudaDeviceSynchronize());
 
-        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<N * (1 << (maxlayer - r)), (1 << r) / 2>>>(aes_key, r, maxlayer - r, d_key, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res));
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation_Se<<<N * (1 << (maxlayer - r)), (1 << r) / 2>>>(aes_key, r, maxlayer - r, d_key, d_s_intermediate, d_t_intermediate, d_se));
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
-    threads_per_block = std::min(1 << maxlayer, 256);
-    blocks_per_grid = (1 << maxlayer) / threads_per_block;
-    CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<N * blocks_per_grid, threads_per_block>>>(d_key, d_s_res, d_t_res, d_se));
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    threads_per_block = 256;
-    CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<N, threads_per_block / 2>>>(d_key, d_se, d_db, d_output, 1, N));
+    if (N == 1 && d_partials != nullptr && ctx.num_partitions > 0)
+    {
+        const uint64_t rows = uint64_t{1} << n;
+        const uint64_t per_block = (rows + ctx.num_partitions - 1) / ctx.num_partitions;
+        CUDA_KERNEL_CHECK(sector_mul_red4_kernel<<<ctx.num_partitions, 256>>>(
+            d_se, d_db, d_partials, rows, per_block));
+        CUDA_KERNEL_CHECK(sector_reduce_partials_kernel<<<1, 256>>>(
+            d_partials, d_output, ctx.num_partitions));
+    }
+    else
+    {
+        threads_per_block = 256;
+        CUDA_KERNEL_CHECK(MultiplicationReduction_grid_row<<<N, threads_per_block / 2>>>(d_key, d_se, d_db, d_output, 1, N));
+    }
     CUDA_CHECK(cudaDeviceSynchronize());
 
     CUDA_CHECK(cudaMemcpy(res, d_output, N * sizeof(uint128_t) * entry_size, cudaMemcpyDeviceToHost));
@@ -578,8 +580,6 @@ extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const pir_batch_context
     uint32_t *d_t = device_ptr<uint32_t>(ctx.bit);
     uint128_t *d_s_intermediate = device_ptr<uint128_t>(ctx.seed_intermediate);
     uint32_t *d_t_intermediate = device_ptr<uint32_t>(ctx.bit_intermediate);
-    uint128_t *d_s_res = device_ptr<uint128_t>(ctx.seed_result);
-    uint32_t *d_t_res = device_ptr<uint32_t>(ctx.bit_result);
     uint128_t *d_se = device_ptr<uint128_t>(ctx.selection);
     uint32_t *aes_key = device_ptr<uint32_t>(ctx.aes_key);
     uint128_t *d_partials = device_ptr<uint128_t>(ctx.partials);
@@ -595,7 +595,7 @@ extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const pir_batch_context
     const int r = 9;
     if (maxlayer <= r)
     {
-        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<batch_size, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_s_res, d_t_res));
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation_Se<<<batch_size, (1 << maxlayer) / 2>>>(aes_key, maxlayer, 0, d_key, d_s, d_t, d_se));
         CUDA_CHECK(cudaDeviceSynchronize());
     }
     else
@@ -603,14 +603,9 @@ extern "C++" uint128_t *test_dpf_pir_batch(uint8_t *key, const pir_batch_context
         CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<batch_size, (1 << (maxlayer - r)) / 2>>>(aes_key, maxlayer - r, 0, d_key, d_s, d_t, d_s_intermediate, d_t_intermediate));
         CUDA_CHECK(cudaDeviceSynchronize());
 
-        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation<<<batch_size * (1 << (maxlayer - r)), (1 << r) / 2>>>(aes_key, r, maxlayer - r, d_key, d_s_intermediate, d_t_intermediate, d_s_res, d_t_res));
+        CUDA_KERNEL_CHECK(EvalAll_BlockEvaluation_Se<<<batch_size * (1 << (maxlayer - r)), (1 << r) / 2>>>(aes_key, r, maxlayer - r, d_key, d_s_intermediate, d_t_intermediate, d_se));
         CUDA_CHECK(cudaDeviceSynchronize());
     }
-
-    const int se_threads = std::min(1 << maxlayer, 256);
-    const int se_blocks_per_query = (1 << maxlayer) / se_threads;
-    CUDA_KERNEL_CHECK(EvalAll_SeGeneration<<<batch_size * se_blocks_per_query, se_threads>>>(d_key, d_s_res, d_t_res, d_se));
-    CUDA_CHECK(cudaDeviceSynchronize());
 
     const int num_partitions = ctx.num_blocks;
     const uint64_t entries = 1ULL << db_bits;

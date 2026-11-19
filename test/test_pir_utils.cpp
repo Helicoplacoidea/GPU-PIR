@@ -124,10 +124,17 @@ bool verify_public_api_uses_typed_contexts()
         return false;
     }
 
-    return content.find("struct PirContext") != std::string::npos &&
-           content.find("struct PirPipelineContext") != std::string::npos &&
-           content.find("struct PirLutContext") != std::string::npos &&
-           content.find("struct PirStreamContext") != std::string::npos;
+    std::ifstream contexts("mpc_cuda/pir_context.h");
+    if (!contexts)
+    {
+        return false;
+    }
+    const std::string context_content((std::istreambuf_iterator<char>(contexts)),
+                                      std::istreambuf_iterator<char>());
+    return context_content.find("struct PirContext") != std::string::npos &&
+           context_content.find("struct PirPipelineContext") != std::string::npos &&
+           context_content.find("struct PirLutContext") != std::string::npos &&
+           context_content.find("struct PirStreamContext") != std::string::npos;
 }
 
 bool verify_cuda_runtime_calls_are_checked()
